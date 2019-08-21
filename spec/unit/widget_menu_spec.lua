@@ -1,12 +1,14 @@
-require("commonrequire")
-local Menu = require("ui/widget/menu")
-local DEBUG = require("dbg")
-
 describe("Menu widget", function()
+    local Menu
+    setup(function()
+        require("commonrequire")
+        Menu = require("ui/widget/menu")
+    end)
+
     it("should convert item table from touch menu properly", function()
         local cb1 = function() end
         local cb2 = function() end
-        re = Menu.itemTableFromTouchMenu({
+        local re = Menu.itemTableFromTouchMenu({
             navi = {
                 icon = 'foo/bar.png',
                 { text = 'foo', callback = cb1 },

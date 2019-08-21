@@ -1,52 +1,67 @@
-local Geom = require("ui/geometry")
-local TimeVal = require("ui/timeval")
-local DEBUG = require("dbg")
+--[[--
+This module detects gestures.
 
---[[
 Current detectable gestures:
-    * tap
-    * pan
-    * hold
-    * swipe
-    * pinch
-    * spread
-    * rotate
-    * hold_pan
-    * double_tap
-    * inward_pan
-    * outward_pan
-    * pan_release
-    * hold_release
-    * two_finger_tap
-    * two_finger_pan
-    * two_finger_swipe
-    * two_finger_pan_release
+
+* `touch` (user touched screen)
+* `tap` (touch action detected as single tap)
+* `pan`
+* `hold`
+* `swipe`
+* `pinch`
+* `spread`
+* `rotate`
+* `hold_pan`
+* `double_tap`
+* `inward_pan`
+* `outward_pan`
+* `pan_release`
+* `hold_release`
+* `two_finger_tap`
+* `two_finger_pan`
+* `two_finger_swipe`
+* `two_finger_pan_release`
 
 You change the state machine by feeding it touch events, i.e. calling
-GestureDetector:feedEvent(tev).
+@{GestureDetector:feedEvent|GestureDetector:feedEvent(tev)}.
+
 
 a touch event should have following format:
-tev = {
-    slot = 1,
-    id = 46,
-    x = 0,
-    y = 1,
-    timev = TimeVal:new{...},
-}
 
-Don't confuse tev with raw evs from kernel, tev is build according to ev.
+    tev = {
+        slot = 1,
+        id = 46,
+        x = 0,
+        y = 1,
+        timev = TimeVal:new{...},
+    }
 
-GestureDetector:feedEvent(tev) will return a detection result when you
-feed a touch release event to it.
+Don't confuse `tev` with raw evs from kernel, `tev` is build according to ev.
+
+@{GestureDetector:feedEvent|GestureDetector:feedEvent(tev)} will return a
+detection result when you feed a touch release event to it.
 --]]
+
+local Geom = require("ui/geometry")
+local TimeVal = require("ui/timeval")
+local logger = require("logger")
+local util = require("util")
+
+-- all the time parameters are in us
+local ges_double_tap_interval = G_reader_settings:readSetting("ges_double_tap_interval") or 300 * 1000
+local ges_two_finger_tap_duration = G_reader_settings:readSetting("ges_two_finger_tap_duration") or 300 * 1000
+local ges_hold_interval = G_reader_settings:readSetting("ges_hold_interval") or 500 * 1000
+local ges_pan_delayed_interval = G_reader_settings:readSetting("ges_pan_delayed_interval") or 500 * 1000
+local ges_swipe_interval = G_reader_settings:readSetting("ges_swipe_interval") or 900 * 1000
 
 local GestureDetector = {
     -- must be initialized with the Input singleton class
     input = nil,
-    -- all the time parameters are in us
+    -- default values (all the time parameters are in us)
     DOUBLE_TAP_INTERVAL = 300 * 1000,
     TWO_FINGER_TAP_DURATION = 300 * 1000,
     HOLD_INTERVAL = 500 * 1000,
+    PAN_DELAYED_INTERVAL = 500 * 1000,
     SWIPE_INTERVAL = 900 * 1000,
     -- pinch/spread direction table
     DIRECTION_TABLE = {
@@ -66,6 +81,8 @@ local GestureDetector = {
     -- latest feeded touch event in each slots
     last_tevs = {},
     first_tevs = {},
+    -- for multiswipe gestures
+    multiswipe_directions = {},
     -- detecting status on each slots
     detectings = {},
     -- for single/double tap
@@ -81,17 +98,21 @@ function GestureDetector:new(o)
 end
 
 function GestureDetector:init()
+    local scaler = self.screen:getDPI() / 167
     -- distance parameters
-    self.DOUBLE_TAP_DISTANCE = 50 * self.screen:getDPI() / 167
-    self.TWO_FINGER_TAP_REGION = 20 * self.screen:getDPI() / 167
-    self.PAN_THRESHOLD = 50 * self.screen:getDPI() / 167
+    self.TWO_FINGER_TAP_REGION = 20 * scaler
+    self.DOUBLE_TAP_DISTANCE = 50 * scaler
+    self.PAN_THRESHOLD = self.DOUBLE_TAP_DISTANCE
+    self.MULTISWIPE_THRESHOLD = self.DOUBLE_TAP_DISTANCE
 end
 
+--[[--
+Feeds touch events to state machine.
+--]]
 function GestureDetector:feedEvent(tevs)
     repeat
         local tev = table.remove(tevs)
         if tev then
-            --DEBUG("tev fed|",tev.timev.sec,"|",tev.timev.usec,"|",tev.x,"|",tev.y,"|",tev.id,"| Evt",tev.slot)
             local slot = tev.slot
             if not self.states[slot] then
                 self:clearState(slot) -- initiate state
@@ -127,7 +148,7 @@ function GestureDetector:isDoubleTap(tap1, tap2)
     return (
         math.abs(tap1.x - tap2.x) < self.DOUBLE_TAP_DISTANCE and
         math.abs(tap1.y - tap2.y) < self.DOUBLE_TAP_DISTANCE and
-        (tv_diff.sec == 0 and (tv_diff.usec) < self.DOUBLE_TAP_INTERVAL)
+        (tv_diff.sec == 0 and (tv_diff.usec) < ges_double_tap_interval)
     )
 end
 
@@ -146,26 +167,33 @@ function GestureDetector:isTwoFingerTap()
         x_diff1 < self.TWO_FINGER_TAP_REGION and
         y_diff0 < self.TWO_FINGER_TAP_REGION and
         y_diff1 < self.TWO_FINGER_TAP_REGION and
-        tv_diff0.sec == 0 and tv_diff0.usec < self.TWO_FINGER_TAP_DURATION and
-        tv_diff1.sec == 0 and tv_diff1.usec < self.TWO_FINGER_TAP_DURATION
+        tv_diff0.sec == 0 and tv_diff0.usec < ges_two_finger_tap_duration and
+        tv_diff1.sec == 0 and tv_diff1.usec < ges_two_finger_tap_duration
     )
 end
 
---[[
-compare last_pan with first_tev in this slot
-return pan direction and distance
+--[[--
+Compares `last_pan` with `first_tev` in this slot.
+
+The second boolean argument `simple` results in only four directions if true.
+
+@return (direction, distance) pan direction and distance
 --]]
-function GestureDetector:getPath(slot)
-    local x_diff = self.last_tevs[slot].x - self.first_tevs[slot].x
-    local y_diff = self.last_tevs[slot].y - self.first_tevs[slot].y
+function GestureDetector:getPath(slot, simple, diagonal, first_tev)
+    first_tev = first_tev or self.first_tevs
+
+    local x_diff = self.last_tevs[slot].x - first_tev[slot].x
+    local y_diff = self.last_tevs[slot].y - first_tev[slot].y
     local direction = nil
     local distance = math.sqrt(x_diff*x_diff + y_diff*y_diff)
-    if x_diff == 0 and y_diff == 0 then
-    else
+    if x_diff ~= 0 or y_diff ~= 0 then
         local v_direction = y_diff < 0 and "north" or "south"
         local h_direction = x_diff < 0 and "west" or "east"
-        if math.abs(y_diff) > 0.577*math.abs(x_diff)
-            and math.abs(y_diff) < 1.732*math.abs(x_diff) then
+        if (not simple
+            and math.abs(y_diff) > 0.577*math.abs(x_diff)
+            and math.abs(y_diff) < 1.732*math.abs(x_diff))
+           or (simple and diagonal)
+        then
             direction = v_direction..h_direction
         elseif (math.abs(x_diff) > math.abs(y_diff)) then
             direction = h_direction
@@ -178,8 +206,8 @@ end
 
 function GestureDetector:isSwipe(slot)
     if not self.first_tevs[slot] or not self.last_tevs[slot] then return end
-    local tv_diff = self.first_tevs[slot].timev - self.last_tevs[slot].timev
-    if (tv_diff.sec == 0) and (tv_diff.usec < self.SWIPE_INTERVAL) then
+    local tv_diff = self.last_tevs[slot].timev - self.first_tevs[slot].timev
+    if (tv_diff.sec == 0) and (tv_diff.usec < ges_swipe_interval) then
         local x_diff = self.last_tevs[slot].x - self.first_tevs[slot].x
         local y_diff = self.last_tevs[slot].y - self.first_tevs[slot].y
         if x_diff ~= 0 or y_diff ~= 0 then
@@ -209,6 +237,36 @@ function GestureDetector:clearState(slot)
     self.detectings[slot] = false
     self.first_tevs[slot] = nil
     self.last_tevs[slot] = nil
+    self.multiswipe_directions = {}
+    self.multiswipe_type = nil
+end
+
+function GestureDetector:setNewInterval(type, interval)
+    if type == "ges_double_tap_interval" then
+        ges_double_tap_interval = interval
+    elseif type == "ges_two_finger_tap_duration" then
+        ges_two_finger_tap_duration = interval
+    elseif type == "ges_hold_interval" then
+        ges_hold_interval = interval
+    elseif type == "ges_pan_delayed_interval" then
+        ges_pan_delayed_interval = interval
+    elseif type == "ges_swipe_interval" then
+        ges_swipe_interval = interval
+    end
+end
+
+function GestureDetector:getInterval(type)
+    if type == "ges_double_tap_interval" then
+        return ges_double_tap_interval
+    elseif type == "ges_two_finger_tap_duration" then
+        return ges_two_finger_tap_duration
+    elseif type == "ges_hold_interval" then
+        return ges_hold_interval
+    elseif type == "ges_pan_delayed_interval" then
+        return ges_pan_delayed_interval
+    elseif type == "ges_swipe_interval" then
+        return ges_swipe_interval
+    end
 end
 
 function GestureDetector:clearStates()
@@ -237,11 +295,11 @@ function GestureDetector:initialState(tev)
     end
 end
 
---[[
-this method handles both single and double tap
+--[[--
+Handles both single and double tap.
 --]]
 function GestureDetector:tapState(tev)
-    DEBUG("in tap state...")
+    logger.dbg("in tap state...")
     local slot = tev.slot
     if tev.id == -1 then
         -- end of tap event
@@ -258,7 +316,7 @@ function GestureDetector:tapState(tev)
                     w = 0, h = 0,
                 }
                 local tap_span = pos0:distance(pos1)
-                DEBUG("two-finger tap detected with span", tap_span)
+                logger.dbg("two-finger tap detected with span", tap_span)
                 self:clearStates()
                 return {
                     ges = "two_finger_tap",
@@ -308,33 +366,33 @@ function GestureDetector:handleDoubleTap(tev)
         timev = tev.timev,
     }
 
-    if self.last_taps[slot] ~= nil and
+    if not self.input.disable_double_tap and self.last_taps[slot] ~= nil and
     self:isDoubleTap(self.last_taps[slot], cur_tap) then
         -- it is a double tap
         self:clearState(slot)
         ges_ev.ges = "double_tap"
         self.last_taps[slot] = nil
-        DEBUG("double tap detected in slot", slot)
+        logger.dbg("double tap detected in slot", slot)
         return ges_ev
     end
 
     -- set current tap to last tap
     self.last_taps[slot] = cur_tap
 
-    DEBUG("set up tap timer")
+    logger.dbg("set up tap timer")
     -- deadline should be calculated by adding current tap time and the interval
     local deadline = cur_tap.timev + TimeVal:new{
         sec = 0,
-        usec = not self.input.disable_double_tap and self.DOUBLE_TAP_INTERVAL or 0,
+        usec = not self.input.disable_double_tap and ges_double_tap_interval or 0,
     }
     self.input:setTimeout(function()
-        DEBUG("in tap timer", self.last_taps[slot] ~= nil)
+        logger.dbg("in tap timer", self.last_taps[slot] ~= nil)
         -- double tap will set last_tap to nil so if it is not, then
         -- user must only tapped once
         if self.last_taps[slot] ~= nil then
             self.last_taps[slot] = nil
             -- we are using closure here
-            DEBUG("single tap detected in slot", slot)
+            logger.dbg("single tap detected in slot", slot, ges_ev.pos)
             return ges_ev
         end
     end, deadline)
@@ -349,18 +407,17 @@ function GestureDetector:handleNonTap(tev)
         -- switched from other state, probably from initialState
         -- we return nil in this case
         self.states[slot] = self.tapState
-        DEBUG("set up hold timer")
+        logger.dbg("set up hold timer")
         local deadline = tev.timev + TimeVal:new{
-            sec = 0, usec = self.HOLD_INTERVAL
+            sec = 0, usec = ges_hold_interval
         }
         self.input:setTimeout(function()
             if self.states[slot] == self.tapState then
                 -- timer set in tapState, so we switch to hold
-                DEBUG("hold gesture detected in slot", slot)
+                logger.dbg("hold gesture detected in slot", slot)
                 return self:switchState("holdState", tev, true)
             end
         end, deadline)
-        --DEBUG("handle non-tap", tev)
         return {
             ges = "touch",
             pos = Geom:new{
@@ -383,7 +440,7 @@ function GestureDetector:handleNonTap(tev)
 end
 
 function GestureDetector:panState(tev)
-    DEBUG("in pan state...")
+    logger.dbg("in pan state...")
     local slot = tev.slot
     if tev.id == -1 then
         -- end of pan, signal swipe gesture if necessary
@@ -399,7 +456,7 @@ function GestureDetector:panState(tev)
                     elseif ges_ev.ges == "outward_pan" then
                         ges_ev.ges = "spread"
                     end
-                    DEBUG(ges_ev.ges, ges_ev.direction, ges_ev.distance, "detected")
+                    logger.dbg(ges_ev.ges, ges_ev.direction, ges_ev.distance, "detected")
                 end
                 return ges_ev
             else
@@ -424,19 +481,36 @@ function GestureDetector:handleSwipe(tev)
         y = self.first_tevs[slot].y,
         w = 0, h = 0,
     }
+    local ges = "swipe"
+    local multiswipe_directions
+
+    if #self.multiswipe_directions > 1 then
+        ges = "multiswipe"
+        multiswipe_directions = ""
+        for k, v in pairs(self.multiswipe_directions) do
+            local sep = ""
+            if k > 1 then
+                sep = " "
+            end
+            multiswipe_directions = multiswipe_directions .. sep .. v[1]
+        end
+        logger.dbg("multiswipe", multiswipe_directions)
+    end
+
     -- TODO: dirty hack for some weird devices, replace it with better solution
     if swipe_direction == "west" and DCHANGE_WEST_SWIPE_TO_EAST then
         swipe_direction = "east"
     elseif swipe_direction == "east" and DCHANGE_EAST_SWIPE_TO_WEST then
         swipe_direction = "west"
     end
-    DEBUG("swipe", swipe_direction, swipe_distance, "detected in slot", slot)
+    logger.dbg("swipe", swipe_direction, swipe_distance, "detected in slot", slot)
     self:clearState(slot)
     return {
-        ges = "swipe",
+        ges = ges,
         -- use first pan tev coordination as swipe start point
         pos = start_pos,
         direction = swipe_direction,
+        multiswipe_directions = multiswipe_directions,
         distance = swipe_distance,
         time = tev.timev,
     }
@@ -448,6 +522,8 @@ function GestureDetector:handlePan(tev)
         return self:handleTwoFingerPan(tev)
     else
         local pan_direction, pan_distance = self:getPath(slot)
+        local tv_diff = self.last_tevs[slot].timev - self.first_tevs[slot].timev
+
         local pan_ev = {
             ges = "pan",
             relative = {
@@ -455,19 +531,88 @@ function GestureDetector:handlePan(tev)
                 x = 0,
                 y = 0,
             },
+            relative_delayed = {
+                -- default to pan 0
+                x = 0,
+                y = 0,
+            },
             pos = nil,
             direction = pan_direction,
             distance = pan_distance,
+            distance_delayed = 0,
             time = tev.timev,
         }
+
+        -- regular pan
         pan_ev.relative.x = tev.x - self.first_tevs[slot].x
         pan_ev.relative.y = tev.y - self.first_tevs[slot].y
+
+        -- delayed pan, used where necessary to reduce potential activation of panning
+        -- when swiping is intended (e.g., for the menu or for multiswipe)
+        if not ((tv_diff.sec == 0) and (tv_diff.usec < ges_pan_delayed_interval)) then
+            pan_ev.relative_delayed.x = tev.x - self.first_tevs[slot].x
+            pan_ev.relative_delayed.y = tev.y - self.first_tevs[slot].y
+            pan_ev.distance_delayed = pan_distance
+        end
+
         pan_ev.pos = Geom:new{
             x = self.last_tevs[slot].x,
             y = self.last_tevs[slot].y,
             w = 0, h = 0,
         }
-        --DEBUG(pan_ev.ges, pan_ev, "detected")
+
+        local msd_cnt = #self.multiswipe_directions
+        local msd_direction_prev = (msd_cnt > 0) and self.multiswipe_directions[msd_cnt][1] or ""
+        local prev_ms_ev, fake_first_tev
+
+        if msd_cnt == 0 then
+            -- determine whether to initiate a straight or diagonal multiswipe
+            self.multiswipe_type = "straight"
+            if pan_direction ~= "north" and pan_direction ~= "south"
+               and pan_direction ~= "east" and pan_direction ~= "west" then
+                self.multiswipe_type = "diagonal"
+            end
+        -- recompute a more accurate direction and distance in a multiswipe context
+        elseif msd_cnt > 0 then
+            prev_ms_ev = self.multiswipe_directions[msd_cnt][2]
+            fake_first_tev = {
+                [slot] = {
+                    ["x"] = prev_ms_ev.pos.x,
+                    ["y"] = prev_ms_ev.pos.y,
+                    ["slot"] = slot,
+                },
+            }
+        end
+
+        -- the first time fake_first_tev is nil, so self.first_tevs is automatically used instead
+        local msd_direction, msd_distance
+        if self.multiswipe_type == "straight" then
+            msd_direction, msd_distance = self:getPath(slot, true, false, fake_first_tev)
+        else
+            msd_direction, msd_distance = self:getPath(slot, true, true, fake_first_tev)
+        end
+
+        if msd_distance > self.MULTISWIPE_THRESHOLD then
+            local pan_ev_multiswipe = pan_ev
+            -- store a copy of pan_ev without rotation adjustment
+            -- for multiswipe calculations when rotated
+            if self.screen.cur_rotation_mode > 0 then
+                pan_ev_multiswipe = util.tableDeepCopy(pan_ev)
+            end
+            if msd_direction ~= msd_direction_prev then
+                self.multiswipe_directions[msd_cnt+1] = {
+                    [1] = msd_direction,
+                    [2] = pan_ev_multiswipe,
+                }
+            -- update ongoing swipe direction to the new maximum
+            else
+                self.multiswipe_directions[msd_cnt] = {
+                    [1] = msd_direction,
+                    [2] = pan_ev_multiswipe,
+                }
+            end
+        end
+
         return pan_ev
     end
 end
@@ -518,11 +663,11 @@ function GestureDetector:handleTwoFingerPan(tev)
             end
             ges_ev.direction = self.DIRECTION_TABLE[tpan_dir]
         end
-        DEBUG(ges_ev.ges, ges_ev.direction, ges_ev.distance, "detected")
+        logger.dbg(ges_ev.ges, ges_ev.direction, ges_ev.distance, "detected")
         return ges_ev
     elseif self.states[rslot] == self.holdState then
         local angle = self:getRotate(rstart_pos, tstart_pos, tend_pos)
-        DEBUG("rotate", angle, "detected")
+        logger.dbg("rotate", angle, "detected")
         return {
             ges = "rotate",
             pos = rstart_pos,
@@ -545,18 +690,18 @@ function GestureDetector:handlePanRelease(tev)
         time = tev.timev,
     }
     if self.detectings[0] and self.detectings[1] then
-        DEBUG("two finger pan release detected")
+        logger.dbg("two finger pan release detected")
         pan_ev.ges = "two_finger_pan_release"
         self:clearStates()
     else
-        DEBUG("pan release detected in slot", slot)
+        logger.dbg("pan release detected in slot", slot)
         self:clearState(slot)
     end
     return pan_ev
 end
 
 function GestureDetector:holdState(tev, hold)
-    DEBUG("in hold state...")
+    logger.dbg("in hold state...")
     local slot = tev.slot
     -- when we switch to hold state, we pass additional param "hold"
     if tev.id ~= -1 and hold and self.last_tevs[slot].x and self.last_tevs[slot].y then
@@ -572,7 +717,7 @@ function GestureDetector:holdState(tev, hold)
         }
     elseif tev.id == -1 and self.last_tevs[slot] ~= nil then
         -- end of hold, signal hold release
-        DEBUG("hold_release detected in slot", slot)
+        logger.dbg("hold_release detected in slot", slot)
         local last_x = self.last_tevs[slot].x
         local last_y = self.last_tevs[slot].y
         self:clearState(slot)
@@ -593,8 +738,45 @@ function GestureDetector:holdState(tev, hold)
     end
 end
 
---[[
-  @brief change gesture's x and y coordinates according to screen view mode
+local ges_coordinate_translation_90 = {
+    north = "west",
+    south = "east",
+    east = "north",
+    west = "south",
+    northeast = "northwest",
+    northwest = "southwest",
+    southeast = "northeast",
+    southwest = "southeast",
+}
+local ges_coordinate_translation_180 = {
+    north = "south",
+    south = "north",
+    east = "west",
+    west = "east",
+    northeast = "southwest",
+    northwest = "southeast",
+    southeast = "northwest",
+    southwest = "northeast",
+}
+local ges_coordinate_translation_270 = {
+    north = "east",
+    south = "west",
+    east = "south",
+    west = "north",
+    northeast = "southeast",
+    northwest = "northeast",
+    southeast = "southwest",
+    southwest = "northwest",
+}
+local function translateGesDirCoordinate(direction, translation_table)
+    return translation_table[direction]
+end
+local function translateMultiswipeGesDirCoordinate(multiswipe_directions, translation_table)
+    return multiswipe_directions:gsub("%S+", translation_table)
+end
+
+--[[--
+  Changes gesture's `x` and `y` coordinates according to screen view mode.
 
   @param ges gesture that you want to adjust
   @return adjusted gesture.
@@ -606,27 +788,17 @@ function GestureDetector:adjustGesCoordinate(ges)
             ges.pos.x, ges.pos.y = (self.screen:getWidth() - ges.pos.y), (ges.pos.x)
         end
         if ges.ges == "swipe" or ges.ges == "pan"
+            or ges.ges == "multiswipe"
             or ges.ges == "two_finger_swipe"
-            or ges.ges == "two_finger_pan" then
-            if ges.direction == "north" then
-                ges.direction = "east"
-            elseif ges.direction == "south" then
-                ges.direction = "west"
-            elseif ges.direction == "east" then
-                ges.direction = "south"
-            elseif ges.direction == "west" then
-                ges.direction = "north"
-            elseif ges.direction == "northeast" then
-                ges.direction = "southeast"
-            elseif ges.direction == "northwest" then
-                ges.direction = "northeast"
-            elseif ges.direction == "southeast" then
-                ges.direction = "southwest"
-            elseif ges.direction == "southwest" then
-                ges.direction = "northwest"
+            or ges.ges == "two_finger_pan"
+        then
+            ges.direction = translateGesDirCoordinate(ges.direction, ges_coordinate_translation_270)
+            if ges.ges == "multiswipe" then
+                ges.multiswipe_directions = translateMultiswipeGesDirCoordinate(ges.multiswipe_directions, ges_coordinate_translation_270)
             end
             if ges.relative then
                 ges.relative.x, ges.relative.y = -ges.relative.y, ges.relative.x
+                ges.relative_delayed.x, ges.relative_delayed.y = -ges.relative_delayed.y, ges.relative_delayed.x
             end
         elseif ges.ges == "pinch" or ges.ges == "spread"
             or ges.ges == "inward_pan"
@@ -643,27 +815,17 @@ function GestureDetector:adjustGesCoordinate(ges)
             ges.pos.x, ges.pos.y = (ges.pos.y), (self.screen:getHeight() - ges.pos.x)
         end
         if ges.ges == "swipe" or ges.ges == "pan"
+            or ges.ges == "multiswipe"
             or ges.ges == "two_finger_swipe"
-            or ges.ges == "two_finger_pan" then
-            if ges.direction == "north" then
-                ges.direction = "west"
-            elseif ges.direction == "south" then
-                ges.direction = "east"
-            elseif ges.direction == "east" then
-                ges.direction = "north"
-            elseif ges.direction == "west" then
-                ges.direction = "south"
-            elseif ges.direction == "northeast" then
-                ges.direction = "northwest"
-            elseif ges.direction == "northwest" then
-                ges.direction = "southeast"
-            elseif ges.direction == "southeast" then
-                ges.direction = "northeast"
-            elseif ges.direction == "southwest" then
-                ges.direction = "southeast"
+            or ges.ges == "two_finger_pan"
+        then
+            ges.direction = translateGesDirCoordinate(ges.direction, ges_coordinate_translation_90)
+            if ges.ges == "multiswipe" then
+                ges.multiswipe_directions = translateMultiswipeGesDirCoordinate(ges.multiswipe_directions, ges_coordinate_translation_90)
             end
             if ges.relative then
                 ges.relative.x, ges.relative.y = ges.relative.y, -ges.relative.x
+                ges.relative_delayed.x, ges.relative_delayed.y = ges.relative_delayed.y, -ges.relative_delayed.x
             end
         elseif ges.ges == "pinch" or ges.ges == "spread"
             or ges.ges == "inward_pan"
@@ -674,7 +836,35 @@ function GestureDetector:adjustGesCoordinate(ges)
                 ges.direction = "horizontal"
             end
         end
+    elseif self.screen.cur_rotation_mode == 2 then
+        -- in portrait mode rotated 180
+        if ges.pos then
+            ges.pos.x, ges.pos.y = (self.screen:getWidth() - ges.pos.x), (self.screen:getHeight() - ges.pos.y)
+        end
+        if ges.ges == "swipe" or ges.ges == "pan"
+            or ges.ges == "multiswipe"
+            or ges.ges == "two_finger_swipe"
+            or ges.ges == "two_finger_pan"
+        then
+            ges.direction = translateGesDirCoordinate(ges.direction, ges_coordinate_translation_180)
+            if ges.ges == "multiswipe" then
+                ges.multiswipe_directions = translateMultiswipeGesDirCoordinate(ges.multiswipe_directions, ges_coordinate_translation_180)
+            end
+            if ges.relative then
+                ges.relative.x, ges.relative.y = -ges.relative.x, -ges.relative.y
+                ges.relative_delayed.x, ges.relative_delayed.y = -ges.relative_delayed.x, -ges.relative_delayed.y
+            end
+        elseif ges.ges == "pinch" or ges.ges == "spread"
+                or ges.ges == "inward_pan"
+                or ges.ges == "outward_pan" then
+            if ges.direction == "horizontal" then
+                ges.direction = "horizontal"
+            elseif ges.direction == "vertical" then
+                ges.direction = "vertical"
+            end
+        end
     end
+    logger.dbg("adjusted ges:", ges.ges, ges.multiswipe_directions or ges.direction)
     return ges
 end
 

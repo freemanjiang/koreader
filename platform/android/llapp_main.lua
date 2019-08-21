@@ -1,60 +1,33 @@
 local A = require("android")
 A.dl.library_path = A.dl.library_path .. ":" .. A.dir .. "/libs"
-A.log_name = 'KOReader'
 
 local ffi = require("ffi")
-ffi.cdef[[
-    char *getenv(const char *name);
-    int putenv(const char *envvar);
-]]
+local dummy = require("ffi/posix_h")
+local C = ffi.C
 
 -- check uri of the intent that starts this application
-local file = A.jni:context(A.app.activity.vm, function(JNI)
-    local uri = JNI:callObjectMethod(
-        JNI:callObjectMethod(
-            A.app.activity.clazz,
-            "getIntent",
-            "()Landroid/content/Intent;"
-        ),
-        "getData",
-        "()Landroid/net/Uri;"
-    )
-    if uri ~= nil then
-        local path = JNI:callObjectMethod(
-            uri,
-            "getPath",
-            "()Ljava/lang/String;"
-        )
-        return JNI:to_string(path)
-    end
-end)
-A.LOGI("intent file path " .. (file or ""))
+local file = A.getIntent()
 
--- update koreader from ota
-local function update()
-    local new_update = "/sdcard/koreader/ota/koreader.update.tar"
-    local installed = "/sdcard/koreader/ota/koreader.installed.tar"
-    local update_file = io.open(new_update, "r")
-    if update_file ~= nil then
-        io.close(update_file)
-        if os.execute("tar xf " .. new_update) == 0 then
-            os.execute("mv " .. new_update .. " " .. installed)
-        end
-    end
-
+if file ~= nil then
+    A.LOGI("intent file path " .. file)
 end
 
 -- run koreader patch before koreader startup
-pcall(function() dofile("/sdcard/koreader/patch.lua") end)
+pcall(dofile, "/sdcard/koreader/patch.lua")
 
--- set proper permission for sdcv
+-- set proper permission for binaries
 A.execute("chmod", "755", "./sdcv")
 A.execute("chmod", "755", "./tar")
 A.execute("chmod", "755", "./zsync")
 
 -- set TESSDATA_PREFIX env var
-ffi.C.putenv("TESSDATA_PREFIX=/sdcard/koreader/data")
+C.setenv("TESSDATA_PREFIX", "/sdcard/koreader/data", 1)
 
 -- create fake command-line arguments
-arg = {"-d", file or "/sdcard"}
+if A.isDebuggable() then
+    arg = {"-d", file or "/sdcard"}
+else
+    arg = {file or "/sdcard"}
+end
+
 dofile(A.dir.."/reader.lua")

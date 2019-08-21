@@ -1,13 +1,14 @@
-local TileCacheItem = require("document/tilecacheitem")
-local DrawContext = require("ffi/drawcontext")
-local Configurable = require("configurable")
 local Blitbuffer = require("ffi/blitbuffer")
-local lfs = require("libs/libkoreader-lfs")
+local Cache = require("cache")
 local CacheItem = require("cacheitem")
+local Configurable = require("configurable")
+local DrawContext = require("ffi/drawcontext")
+local CanvasContext = require("document/canvascontext")
 local Geom = require("ui/geometry")
 local Math = require("optmath")
-local Cache = require("cache")
-local DEBUG = require("dbg")
+local TileCacheItem = require("document/tilecacheitem")
+local lfs = require("libs/libkoreader-lfs")
+local logger = require("logger")
 
 --[[
 This is an abstract interface to a document
@@ -31,6 +32,12 @@ local Document = {
 
     -- flag to show that the document is edited and needs to write back to disk
     is_edited = false,
+
+    -- whether this document can be rendered in color
+    is_color_capable = true,
+    -- bb type needed by engine for color rendering
+    color_bb_type = Blitbuffer.TYPE_BBRGB32,
+
 }
 
 function Document:new(from_o)
@@ -67,6 +74,10 @@ function Document:_init()
         author = "",
         date = ""
     }
+
+    -- Should be updated by a call to Document.updateColorRendering(self)
+    -- in subclasses
+    self.render_color = false
 end
 
 -- override this method to open a document
@@ -99,33 +110,52 @@ function Document:discardChange()
     self.is_edited = false
 end
 
--- calculate partial digest of the document
--- since only PDF documents could be modified by koreader by appending data
+-- calculate partial digest of the document and store in its docsettings to avoid document saving
+-- feature to change its checksum.
+--
+-- To the calculating mechanism itself.
+-- since only PDF documents could be modified by KOReader by appending data
 -- at the end of the files when highlighting, we use a non-even sampling
 -- algorithm which samples with larger weight at file head and much smaller
 -- weight at file tail, thus reduces the probability that appended data may change
 -- the digest value.
 -- Note that if PDF file size is around 1024, 4096, 16384, 65536, 262144
 -- 1048576, 4194304, 16777216, 67108864, 268435456 or 1073741824, appending data
--- by highlighting in koreader may change the digest value.
-function Document:fastDigest()
-    local md5 = require("ffi/MD5")
-    local lshift = bit.lshift
+-- by highlighting in KOReader may change the digest value.
+function Document:fastDigest(docsettings)
+    if not self.file then return end
     local file = io.open(self.file, 'rb')
     if file then
-        local step, size = 1024, 1024
-        local m = md5.new()
-        for i = -1, 10 do
-            file:seek("set", lshift(step, 2*i))
-            local sample = file:read(size)
-            if sample then
-                m:update(sample)
-            else
-                break
+        local tmp_docsettings = false
+        if not docsettings then -- if not provided, open/create it
+            docsettings = require("docsettings"):open(self.file)
+            tmp_docsettings = true
+        end
+        local result = docsettings:readSetting("partial_md5_checksum")
+        if not result then
+            logger.dbg("computing and storing partial_md5_checksum")
+            local bit = require("bit")
+            local md5 = require("ffi/MD5")
+            local lshift = bit.lshift
+            local step, size = 1024, 1024
+            local m = md5.new()
+            for i = -1, 10 do
+                file:seek("set", lshift(step, 2*i))
+                local sample = file:read(size)
+                if sample then
+                    m:update(sample)
+                else
+                    break
+                end
             end
+            result = m:sum()
+            docsettings:saveSetting("partial_md5_checksum", result)
+        end
+        if tmp_docsettings then
+            docsettings:close()
         end
         file:close()
-        return m:sum()
+        return result
     end
 end
 
@@ -142,6 +172,10 @@ function Document:getNativePageDimensions(pageno)
     Cache:insert(hash, CacheItem:new{ page_size })
     page:close()
     return page_size
+end
+
+function Document:getProps()
+    return self._document:getDocumentProps()
 end
 
 function Document:_readMetadata()
@@ -162,36 +196,30 @@ function Document:getPageDimensions(pageno, zoom, rotation)
         native_dimen.w, native_dimen.h = native_dimen.h, native_dimen.w
     end
     native_dimen:scaleBy(zoom)
-    --DEBUG("dimen for pageno", pageno, "zoom", zoom, "rotation", rotation, "is", native_dimen)
     return native_dimen
 end
 
 function Document:getPageBBox(pageno)
     local bbox = self.bbox[pageno] -- exact
     if bbox ~= nil then
-        --DEBUG("bbox from", pageno)
         return bbox
     else
         local oddEven = Math.oddEven(pageno)
         bbox = self.bbox[oddEven] -- odd/even
     end
     if bbox ~= nil then -- last used up to this page
-        --DEBUG("bbox from", oddEven)
         return bbox
     else
         for i = 0,pageno do
             bbox = self.bbox[ pageno - i ]
             if bbox ~= nil then
-                --DEBUG("bbox from", pageno - i)
                 return bbox
             end
         end
     end
     if bbox == nil then -- fallback bbox
         bbox = self:getUsedBBox(pageno)
-        --DEBUG("bbox from ORIGINAL page")
     end
-    --DEBUG("final bbox", bbox)
     return bbox
 end
 
@@ -227,11 +255,23 @@ function Document:getToc()
     return self._document:getToc()
 end
 
+function Document:canHaveAlternativeToc()
+    return false
+end
+
+function Document:isTocAlternativeToc()
+    return false
+end
+
 function Document:getPageLinks(pageno)
     return nil
 end
 
 function Document:getLinkFromPosition(pageno, pos)
+    return nil
+end
+
+function Document:getImageFromPosition(pos)
     return nil
 end
 
@@ -251,17 +291,38 @@ function Document:findText()
     return nil
 end
 
-function Document:getFullPageHash(pageno, zoom, rotation, gamma, render_mode)
+function Document:updateColorRendering()
+    if self.is_color_capable and CanvasContext.is_color_rendering_enabled then
+        self.render_color = true
+    else
+        self.render_color = false
+    end
+end
+
+function Document:preRenderPage()
+    return nil
+end
+
+function Document:postRenderPage()
+    return nil
+end
+
+function Document:getFullPageHash(pageno, zoom, rotation, gamma, render_mode, color)
     return "renderpg|"..self.file.."|"..self.mod_time.."|"..pageno.."|"
-                    ..zoom.."|"..rotation.."|"..gamma.."|"..render_mode
+                    ..zoom.."|"..rotation.."|"..gamma.."|"..render_mode..(color and "|color" or "")
 end
 
 function Document:renderPage(pageno, rect, zoom, rotation, gamma, render_mode)
-    local hash = self:getFullPageHash(pageno, zoom, rotation, gamma, render_mode)
-    local hash_excerpt = hash.."|"..tostring(rect)
-
-    local tile = Cache:check(hash, TileCacheItem) or Cache:check(hash_excerpt)
+    local hash_excerpt
+    local hash = self:getFullPageHash(pageno, zoom, rotation, gamma, render_mode, self.render_color)
+    local tile = Cache:check(hash, TileCacheItem)
+    if not tile then
+        hash_excerpt = hash.."|"..tostring(rect)
+        tile = Cache:check(hash_excerpt)
+    end
     if tile then return tile end
+
+    self:preRenderPage()
 
     local page_size = self:getPageDimensions(pageno, zoom, rotation)
     -- this will be the size we actually render
@@ -269,10 +330,10 @@ function Document:renderPage(pageno, rect, zoom, rotation, gamma, render_mode)
     -- we prefer to render the full page, if it fits into cache
     if not Cache:willAccept(size.w * size.h + 64) then
         -- whole page won't fit into cache
-        DEBUG("rendering only part of the page")
+        logger.dbg("rendering only part of the page")
         -- TODO: figure out how to better segment the page
         if not rect then
-            DEBUG("aborting, since we do not have a specification for that part")
+            logger.warn("aborting, since we do not have a specification for that part")
             -- required part not given, so abort
             return
         end
@@ -287,7 +348,7 @@ function Document:renderPage(pageno, rect, zoom, rotation, gamma, render_mode)
         size = size.w * size.h + 64, -- estimation
         excerpt = size,
         pageno = pageno,
-        bb = Blitbuffer.new(size.w, size.h)
+        bb = Blitbuffer.new(size.w, size.h, self.render_color and self.color_bb_type or nil)
     }
 
     -- create a draw context
@@ -305,7 +366,6 @@ function Document:renderPage(pageno, rect, zoom, rotation, gamma, render_mode)
     dc:setZoom(zoom)
 
     if gamma ~= self.GAMMA_NO_GAMMA then
-        --DEBUG("gamma correction: ", gamma)
         dc:setGamma(gamma)
     end
 
@@ -315,13 +375,14 @@ function Document:renderPage(pageno, rect, zoom, rotation, gamma, render_mode)
     page:close()
     Cache:insert(hash, tile)
 
+    self:postRenderPage()
     return tile
 end
 
 -- a hint for the cache engine to paint a full page to the cache
 -- TODO: this should trigger a background operation
 function Document:hintPage(pageno, zoom, rotation, gamma, render_mode)
-    DEBUG("hinting page", pageno)
+    logger.dbg("hinting page", pageno)
     self:renderPage(pageno, nil, zoom, rotation, gamma, render_mode)
 end
 
@@ -335,12 +396,16 @@ Draw page content to blitbuffer.
 --]]
 function Document:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma, render_mode)
     local tile = self:renderPage(pageno, rect, zoom, rotation, gamma, render_mode)
-    DEBUG("now painting", tile, rect)
     target:blitFrom(tile.bb,
         x, y,
         rect.x - tile.excerpt.x,
         rect.y - tile.excerpt.y,
         rect.w, rect.h)
+end
+
+function Document:getDrawnImagesStatistics()
+    -- For now, only set by CreDocument in CreDocument:drawCurrentView()
+    return self._drawn_images_count, self._drawn_images_surface_ratio
 end
 
 function Document:getPageText(pageno)

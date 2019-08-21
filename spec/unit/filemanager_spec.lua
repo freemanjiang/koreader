@@ -1,13 +1,16 @@
-require("commonrequire")
-local FileManager = require("apps/filemanager/filemanager")
-local lfs = require("libs/libkoreader-lfs")
-local docsettings = require("docsettings")
-local UIManager = require("ui/uimanager")
-local Screen = require("device").screen
-local util = require("ffi/util")
-local DEBUG = require("dbg")
-
 describe("FileManager module", function()
+    local FileManager, lfs, docsettings, UIManager, Screen, util
+    setup(function()
+        require("commonrequire")
+        package.unloadAll()
+        require("document/canvascontext"):init(require("device"))
+        FileManager = require("apps/filemanager/filemanager")
+        Screen = require("device").screen
+        UIManager = require("ui/uimanager")
+        docsettings = require("docsettings")
+        lfs = require("libs/libkoreader-lfs")
+        util = require("ffi/util")
+    end)
     it("should show file manager", function()
         UIManager:quit()
         local filemanager = FileManager:new{
@@ -55,7 +58,7 @@ describe("FileManager module", function()
         assert.is_not_nil(lfs.attributes(tmp_history))
 
         UIManager.show = function(self, w)
-            assert.Equals(w.text, "Successfully deleted "..tmp_fn)
+            assert.Equals(w.text, "Deleted "..tmp_fn)
         end
         filemanager:deleteFile(tmp_fn)
         UIManager.show = old_show
@@ -90,7 +93,7 @@ describe("FileManager module", function()
         assert.is_not_nil(lfs.attributes(tmp_history))
 
         UIManager.show = function(self, w)
-            assert.Equals(w.text, "Successfully deleted "..tmp_fn)
+            assert.Equals(w.text, "Deleted "..tmp_fn)
         end
         filemanager:deleteFile(tmp_fn)
         UIManager.show = old_show

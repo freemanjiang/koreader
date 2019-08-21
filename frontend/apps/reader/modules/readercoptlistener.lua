@@ -1,22 +1,25 @@
-local EventListener = require("ui/widget/eventlistener")
 local Event = require("ui/event")
+local EventListener = require("ui/widget/eventlistener")
 
 local ReaderCoptListener = EventListener:new{}
 
 function ReaderCoptListener:onReadSettings(config)
-    local view_mode = config:readSetting("copt_view_mode")
+    local view_mode = config:readSetting("copt_view_mode") or
+           G_reader_settings:readSetting("copt_view_mode")
     if view_mode == 0 then
-        table.insert(self.ui.postInitCallback, function()
-            self.ui:handleEvent(Event:new("SetViewMode", "page"))
+        self.ui:registerPostReadyCallback(function()
+            self.view:onSetViewMode("page")
         end)
     elseif view_mode == 1 then
-        table.insert(self.ui.postInitCallback, function()
-            self.ui:handleEvent(Event:new("SetViewMode", "scroll"))
+        self.ui:registerPostReadyCallback(function()
+            self.view:onSetViewMode("scroll")
         end)
     end
 
-    local status_line = config:readSetting("copt_status_line") or DCREREADER_PROGRESS_BAR
-    self.document:setStatusLineProp(status_line)
+    local status_line = config:readSetting("copt_status_line") or
+             G_reader_settings:readSetting("copt_status_line") or
+             DCREREADER_PROGRESS_BAR
+    self.ui:handleEvent(Event:new("SetStatusLine", status_line, true))
 end
 
 function ReaderCoptListener:onSetFontSize(font_size)

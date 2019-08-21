@@ -1,14 +1,15 @@
-local TileCacheItem = require("document/tilecacheitem")
-local KOPTContext = require("ffi/koptcontext")
-local Document = require("document/document")
-local DataStorage = require("datastorage")
-local CacheItem = require("cacheitem")
-local Screen = require("device").screen
-local Geom = require("ui/geometry")
-local serial = require("serialize")
 local Cache = require("cache")
+local CacheItem = require("cacheitem")
+local DataStorage = require("datastorage")
 local DEBUG = require("dbg")
+local Document = require("document/document")
+local Geom = require("ui/geometry")
+local KOPTContext = require("ffi/koptcontext")
+local TileCacheItem = require("document/tilecacheitem")
+local logger = require("logger")
+local serial = require("serialize")
 local util = require("ffi/util")
+local CanvasContext = require("document/canvascontext")
 
 local KoptInterface = {
     ocrengine = "ocrengine",
@@ -17,7 +18,6 @@ local KoptInterface = {
     ocr_type = 3, -- default 0, for more accuracy use 3
     last_context_size = nil,
     default_context_size = 1024*1024,
-    screen_dpi = Screen:getDPI(),
 }
 
 local ContextCacheItem = CacheItem:new{}
@@ -25,20 +25,20 @@ local ContextCacheItem = CacheItem:new{}
 function ContextCacheItem:onFree()
     if self.kctx.free then
         KoptInterface:waitForContext(self.kctx)
-        DEBUG("free koptcontext", self.kctx)
+        logger.dbg("free koptcontext", self.kctx)
         self.kctx:free()
     end
 end
 
 function ContextCacheItem:dump(filename)
     if self.kctx:isPreCache() == 0 then
-        DEBUG("dumping koptcontext to", filename)
+        logger.dbg("dumping koptcontext to", filename)
         return serial.dump(self.size, KOPTContext.totable(self.kctx), filename)
     end
 end
 
 function ContextCacheItem:load(filename)
-    DEBUG("loading koptcontext from", filename)
+    logger.dbg("loading koptcontext from", filename)
     local size, kc_table = serial.load(filename)
     self.size = size
     self.kctx = KOPTContext.fromtable(kc_table)
@@ -48,16 +48,34 @@ local OCREngine = CacheItem:new{}
 
 function OCREngine:onFree()
     if self.ocrengine.freeOCR then
-        DEBUG("free OCREngine", self.ocrengine)
+        logger.dbg("free OCREngine", self.ocrengine)
         self.ocrengine:freeOCR()
     end
+end
+
+function KoptInterface:setDefaultConfigurable(configurable)
+    configurable.doc_language = DKOPTREADER_CONFIG_DOC_DEFAULT_LANG_CODE
+    configurable.trim_page = DKOPTREADER_CONFIG_TRIM_PAGE
+    configurable.text_wrap = DKOPTREADER_CONFIG_TEXT_WRAP
+    configurable.detect_indent = DKOPTREADER_CONFIG_DETECT_INDENT
+    configurable.max_columns = DKOPTREADER_CONFIG_MAX_COLUMNS
+    configurable.auto_straighten = DKOPTREADER_CONFIG_AUTO_STRAIGHTEN
+    configurable.justification = DKOPTREADER_CONFIG_JUSTIFICATION
+    configurable.writing_direction = 0
+    configurable.font_size = DKOPTREADER_CONFIG_FONT_SIZE
+    configurable.page_margin = DKOPTREADER_CONFIG_PAGE_MARGIN
+    configurable.quality = DKOPTREADER_CONFIG_RENDER_QUALITY
+    configurable.contrast = DKOPTREADER_CONFIG_CONTRAST
+    configurable.defect_size = DKOPTREADER_CONFIG_DEFECT_SIZE
+    configurable.line_spacing = DKOPTREADER_CONFIG_LINE_SPACING
+    configurable.word_spacing = DKOPTREADER_CONFIG_DEFAULT_WORD_SPACING
 end
 
 function KoptInterface:waitForContext(kc)
     -- if koptcontext is being processed in background thread
     -- the isPreCache will return 1.
     while kc and kc:isPreCache() == 1 do
-        DEBUG("waiting for background rendering")
+        logger.dbg("waiting for background rendering")
         util.usleep(100000)
     end
     return kc
@@ -70,7 +88,7 @@ function KoptInterface:createContext(doc, pageno, bbox)
     -- Now koptcontext keeps track of its dst bitmap reflowed by libk2pdfopt.
     -- So there is no need to check background context when creating new context.
     local kc = KOPTContext.new()
-    local screen_size = Screen:getSize()
+    local canvas_size = CanvasContext:getSize()
     local lang = doc.configurable.doc_language
     if lang == "chi_sim" or lang == "chi_tra" or
         lang == "jpn" or lang == "kor" then
@@ -81,8 +99,8 @@ function KoptInterface:createContext(doc, pageno, bbox)
     kc:setWrap(doc.configurable.text_wrap)
     kc:setIndent(doc.configurable.detect_indent)
     kc:setColumns(doc.configurable.max_columns)
-    kc:setDeviceDim(screen_size.w, screen_size.h)
-    kc:setDeviceDPI(self.screen_dpi)
+    kc:setDeviceDim(canvas_size.w, canvas_size.h)
+    kc:setDeviceDPI(CanvasContext:getDPI())
     kc:setStraighten(doc.configurable.auto_straighten)
     kc:setJustification(doc.configurable.justification)
     kc:setWritingDirection(doc.configurable.writing_direction)
@@ -106,11 +124,11 @@ function KoptInterface:createContext(doc, pageno, bbox)
 end
 
 function KoptInterface:getContextHash(doc, pageno, bbox)
-    local screen_size = Screen:getSize()
-    local screen_size_hash = screen_size.w.."|"..screen_size.h
+    local canvas_size = CanvasContext:getSize()
+    local canvas_size_hash = canvas_size.w.."|"..canvas_size.h
     local bbox_hash = bbox.x0.."|"..bbox.y0.."|"..bbox.x1.."|"..bbox.y1
     return doc.file.."|"..doc.mod_time.."|"..pageno.."|"
-            ..doc.configurable:hash("|").."|"..bbox_hash.."|"..screen_size_hash
+            ..doc.configurable:hash("|").."|"..bbox_hash.."|"..canvas_size_hash
 end
 
 function KoptInterface:getPageBBox(doc, pageno)
@@ -142,17 +160,13 @@ function KoptInterface:getAutoBBox(doc, pageno)
     if not cached then
         local page = doc._document:openPage(pageno)
         local kc = self:createContext(doc, pageno, bbox)
-        --DEBUGBT()
-        --DEBUG("getAutoBBox:native page size", native_size)
         page:getPagePix(kc)
         local x0, y0, x1, y1 = kc:getAutoBBox()
         local w, h = native_size.w, native_size.h
         if (x1 - x0)/w > 0.1 or (y1 - y0)/h > 0.1 then
             bbox.x0, bbox.y0, bbox.x1, bbox.y1 = x0, y0, x1, y1
-            --DEBUG("getAutoBBox:auto detected bbox", bbox)
         else
             bbox = Document.getPageBBox(doc, pageno)
-            --DEBUG("getAutoBBox:use manual bbox", bbox)
         end
         Cache:insert(hash, CacheItem:new{ autobbox = bbox })
         page:close()
@@ -182,7 +196,12 @@ function KoptInterface:getSemiAutoBBox(doc, pageno)
         auto_bbox.y0 = auto_bbox.y0 + bbox.y0
         auto_bbox.x1 = auto_bbox.x1 + bbox.x0
         auto_bbox.y1 = auto_bbox.y1 + bbox.y0
-        DEBUG("Semi-auto detected bbox", auto_bbox)
+        logger.dbg("Semi-auto detected bbox", auto_bbox)
+        local native_size = Document.getNativePageDimensions(doc, pageno)
+        if (auto_bbox.x1 - auto_bbox.x0)/native_size.w < 0.1 and (auto_bbox.y1 - auto_bbox.y0)/native_size.h < 0.1 then
+            logger.dbg("Semi-auto detected bbox too small, using manual bbox")
+            auto_bbox = bbox
+        end
         page:close()
         Cache:insert(hash, CacheItem:new{ semiautobbox = auto_bbox })
         kc:free()
@@ -206,17 +225,16 @@ function KoptInterface:getCachedContext(doc, pageno)
         -- If kctx is not cached, create one and get reflowed bmp in foreground.
         local kc = self:createContext(doc, pageno, bbox)
         local page = doc._document:openPage(pageno)
-        DEBUG("reflowing page", pageno, "in foreground")
+        logger.dbg("reflowing page", pageno, "in foreground")
         -- reflow page
         --local secs, usecs = util.gettime()
         page:reflow(kc, 0)
         page:close()
         --local nsecs, nusecs = util.gettime()
         --local dur = nsecs - secs + (nusecs - usecs) / 1000000
-        --DEBUG("Reflow duration:", dur)
         --self:logReflowDuration(pageno, dur)
         local fullwidth, fullheight = kc:getPageDim()
-        DEBUG("reflowed page", pageno, "fullwidth:", fullwidth, "fullheight:", fullheight)
+        logger.dbg("reflowed page", pageno, "fullwidth:", fullwidth, "fullheight:", fullheight)
         self.last_context_size = fullwidth * fullheight + 128 -- estimation
         Cache:insert(kctx_hash, ContextCacheItem:new{
             persistent = true,
@@ -258,11 +276,11 @@ get first page image
 --]]
 function KoptInterface:getCoverPageImage(doc)
     local native_size = Document.getNativePageDimensions(doc, 1)
-    local screen_size = Screen:getSize()
-    local zoom = math.min(screen_size.w / native_size.w, screen_size.h / native_size.h)
+    local canvas_size = CanvasContext:getSize()
+    local zoom = math.min(canvas_size.w / native_size.w, canvas_size.h / native_size.h)
     local tile = Document.renderPage(doc, 1, nil, zoom, 0, 1, 0)
     if tile then
-        return tile.bb
+        return tile.bb:copy()
     end
 end
 
@@ -322,17 +340,17 @@ function KoptInterface:renderOptimizedPage(doc, pageno, rect, zoom, rotation, re
     local cached = Cache:check(renderpg_hash, TileCacheItem)
     if not cached then
         local page_size = Document.getNativePageDimensions(doc, pageno)
-        local bbox = {
+        local full_page_bbox = {
             x0 = 0, y0 = 0,
             x1 = page_size.w,
             y1 = page_size.h,
         }
-        local kc = self:createContext(doc, pageno, bbox)
+        local kc = self:createContext(doc, pageno, full_page_bbox)
         local page = doc._document:openPage(pageno)
         kc:setZoom(zoom)
         page:getPagePix(kc)
         page:close()
-        DEBUG("optimizing page", pageno)
+        logger.dbg("optimizing page", pageno)
         kc:optimizePage()
         local fullwidth, fullheight = kc:getPageDim()
         -- prepare cache item with contained blitbuffer
@@ -379,7 +397,7 @@ function KoptInterface:hintReflowedPage(doc, pageno, zoom, rotation, gamma, rend
     if not cached then
         local kc = self:createContext(doc, pageno, bbox)
         local page = doc._document:openPage(pageno)
-        DEBUG("hinting page", pageno, "in background")
+        logger.dbg("hinting page", pageno, "in background")
         -- reflow will return immediately and running in background thread
         kc:setPreCache()
         page:reflow(kc, 0)
@@ -407,7 +425,6 @@ draw cached tile pixels into target blitbuffer.
 --]]
 function KoptInterface:drawContextPage(doc, target, x, y, rect, pageno, zoom, rotation, render_mode)
     local tile = self:renderPage(doc, pageno, rect, zoom, rotation, render_mode)
-    --DEBUG("now painting", tile, rect)
     target:blitFrom(tile.bb,
         x, y,
         rect.x - tile.excerpt.x,
@@ -421,7 +438,7 @@ returned boxes are in native page coordinates zoomed at 1.0
 --]]
 function KoptInterface:getTextBoxes(doc, pageno)
     local text = doc:getPageTextBoxes(pageno)
-    if text and #text > 1 and doc.configurable.forced_ocr == 0 then
+    if text and #text > 1 and doc.configurable.forced_ocr ~= 1 then
         return text
     -- if we have no text in original page then we will reuse native word boxes
     -- in reflow mode and find text boxes from scratch in non-reflow mode
@@ -444,7 +461,7 @@ function KoptInterface:getReflowedTextBoxes(doc, pageno)
     local cached = Cache:check(hash)
     if not cached then
         local kctx_hash = "kctx|"..context_hash
-        local cached = Cache:check(kctx_hash)
+        cached = Cache:check(kctx_hash)
         if cached then
             local kc = self:waitForContext(cached.kctx)
             --kc:setDebug()
@@ -468,7 +485,7 @@ function KoptInterface:getNativeTextBoxes(doc, pageno)
     local cached = Cache:check(hash)
     if not cached then
         local kctx_hash = "kctx|"..context_hash
-        local cached = Cache:check(kctx_hash)
+        cached = Cache:check(kctx_hash)
         if cached then
             local kc = self:waitForContext(cached.kctx)
             --kc:setDebug()
@@ -493,7 +510,7 @@ function KoptInterface:getReflowedTextBoxesFromScratch(doc, pageno)
     local cached = Cache:check(hash)
     if not cached then
         local kctx_hash = "kctx|"..context_hash
-        local cached = Cache:check(kctx_hash)
+        cached = Cache:check(kctx_hash)
         if cached then
             local reflowed_kc = self:waitForContext(cached.kctx)
             local fullwidth, fullheight = reflowed_kc:getPageDim()
@@ -540,30 +557,32 @@ end
 --[[
 get page regions in native page via optical method,
 --]]
-function KoptInterface:getPageRegions(doc, pageno)
+function KoptInterface:getPageBlock(doc, pageno, x, y)
+    local kctx
     local bbox = doc:getPageBBox(pageno)
     local context_hash = self:getContextHash(doc, pageno, bbox)
-    local hash = "pageregions|"..context_hash
+    local hash = "pageblocks|"..context_hash
     local cached = Cache:check(hash)
     if not cached then
         local page_size = Document.getNativePageDimensions(doc, pageno)
-        local bbox = {
+        local full_page_bbox = {
             x0 = 0, y0 = 0,
             x1 = page_size.w,
             y1 = page_size.h,
         }
-        local kc = self:createContext(doc, pageno, bbox)
-        kc:setZoom(1.0)
+        local kc = self:createContext(doc, pageno, full_page_bbox)
+        -- leptonica needs a source image of at least 300dpi
+        kc:setZoom(CanvasContext:getWidth() / page_size.w * 300 / CanvasContext:getDPI())
         local page = doc._document:openPage(pageno)
         page:getPagePix(kc)
-        local regions = kc:getPageRegions()
-        Cache:insert(hash, CacheItem:new{ pageregions = regions })
+        kc:findPageBlocks()
+        Cache:insert(hash, CacheItem:new{ kctx = kc })
         page:close()
-        kc:free()
-        return regions
+        kctx = kc
     else
-        return cached.pageregions
+        kctx = cached.kctx
     end
+    return kctx:getPageBlock(x, y)
 end
 
 --[[
@@ -591,7 +610,7 @@ function KoptInterface:getReflewOCRWord(doc, pageno, rect)
     local cached = Cache:check(hash)
     if not cached then
         local kctx_hash = "kctx|"..context_hash
-        local cached = Cache:check(kctx_hash)
+        cached = Cache:check(kctx_hash)
         if cached then
             local kc = self:waitForContext(cached.kctx)
             local _, word = pcall(
@@ -612,7 +631,7 @@ get word from OCR in native page
 function KoptInterface:getNativeOCRWord(doc, pageno, rect)
     self.ocr_lang = doc.configurable.doc_language
     local hash = "ocrword|"..doc.file.."|"..pageno..rect.x..rect.y..rect.w..rect.h
-    DEBUG("hash", hash)
+    logger.dbg("hash", hash)
     local cached = Cache:check(hash)
     if not cached then
         local bbox = {
@@ -627,13 +646,12 @@ function KoptInterface:getNativeOCRWord(doc, pageno, rect)
         page:getPagePix(kc)
         --kc:exportSrcPNGFile({rect}, nil, "ocr-word.png")
         local word_w, word_h = kc:getPageDim()
-        --DEBUG(word_w, word_h)
         local _, word = pcall(
             kc.getTOCRWord, kc, "src",
             0, 0, word_w, word_h,
             self.tessocr_data, self.ocr_lang, self.ocr_type, 0, 1)
         Cache:insert(hash, CacheItem:new{ ocrword = word })
-        DEBUG("word", word)
+        logger.dbg("word", word)
         page:close()
         kc:free()
         return word
@@ -649,7 +667,7 @@ function KoptInterface:getOCRText(doc, pageno, tboxes)
     if not Cache:check(self.ocrengine) then
         Cache:insert(self.ocrengine, OCREngine:new{ ocrengine = KOPTContext.new() })
     end
-    DEBUG("Not implemented yet")
+    logger.info("Not implemented yet")
 end
 
 function KoptInterface:getClipPageContext(doc, pos0, pos1, pboxes, drawer)
@@ -662,8 +680,8 @@ function KoptInterface:getClipPageContext(doc, pos0, pos1, pboxes, drawer)
             x = box.x, y = box.y,
             w = box.w, h = box.h,
         }
-        for _, box in ipairs(pboxes) do
-            rect = rect:combine(Geom:new(box))
+        for _, _box in ipairs(pboxes) do
+            rect = rect:combine(Geom:new(_box))
         end
     else
         local zoom = pos0.zoom or 1
@@ -866,16 +884,12 @@ function KoptInterface:getWordFromReflowPosition(doc, boxes, pos)
 
     local scratch_reflowed_page_boxes = self:getReflowedTextBoxesFromScratch(doc, pageno)
     local scratch_reflowed_word_box = self:getWordFromBoxes(scratch_reflowed_page_boxes, pos)
-    --DEBUG("word box from scratch", scratch_reflowed_word_box)
 
     local reflowed_page_boxes = self:getReflowedTextBoxes(doc, pageno)
     local reflowed_word_box = self:getWordFromBoxes(reflowed_page_boxes, pos)
-    --DEBUG("word box from reflow", reflowed_word_box)
 
     local reflowed_pos_abs = scratch_reflowed_word_box.box:center()
     local reflowed_pos_rel = getBoxRelativePosition(scratch_reflowed_word_box.box, reflowed_word_box.box)
-    --DEBUG("word box absolote center", reflowed_pos_abs)
-    --DEBUG("word box relative center", reflowed_pos_rel)
 
     local native_pos = self:reflowToNativePosTransform(doc, pageno, reflowed_pos_abs, reflowed_pos_rel)
     local native_word_box = self:getWordFromBoxes(boxes, native_pos)
@@ -907,9 +921,9 @@ end
 get link from position in screen page
 ]]--
 function KoptInterface:getLinkFromPosition(doc, pageno, pos)
-    local function inside_box(pos, box)
-        if pos then
-            local x, y = pos.x, pos.y
+    local function _inside_box(_pos, box)
+        if _pos then
+            local x, y = _pos.x, _pos.y
             if box.x <= x and box.y <= y
                 and box.x + box.w >= x
                 and box.y + box.h >= y then
@@ -922,16 +936,20 @@ function KoptInterface:getLinkFromPosition(doc, pageno, pos)
         if doc.configurable.text_wrap == 1 then
             pos = self:reflowToNativePosTransform(doc, pageno, pos, {x=0.5, y=0.5})
         end
+
+        local offset = CanvasContext:scaleBySize(5)
+        local len = CanvasContext:scaleBySize(10)
         for i = 1, #page_links do
             local link = page_links[i]
             -- enlarge tappable link box
             local lbox = Geom:new{
-                x = link.x0 - Screen:scaleBySize(5),
-                y = link.y0 - Screen:scaleBySize(5),
-                w = link.x1 - link.x0 + Screen:scaleBySize(10),
-                h = link.y1 - link.y0 + Screen:scaleBySize(10)
+                x = link.x0 - offset,
+                y = link.y0 - offset,
+                w = link.x1 - link.x0 + len,
+                h = link.y1 - link.y0 + len,
             }
-            if inside_box(pos, lbox) and link.page then
+            -- Allow external links, with link.uri instead of link.page
+            if _inside_box(pos, lbox) then -- and link.page then
                 return link, lbox
             end
         end
@@ -943,10 +961,8 @@ transform position in native page to reflowed page
 ]]--
 function KoptInterface:nativeToReflowPosTransform(doc, pageno, pos)
     local kc = self:getCachedContext(doc, pageno)
-    --DEBUG("transform native pos", pos)
     local rpos = {}
     rpos.x, rpos.y = kc:nativeToReflowPosTransform(pos.x, pos.y)
-    --DEBUG("transformed reflowed pos", rpos)
     return rpos
 end
 
@@ -955,11 +971,8 @@ transform position in reflowed page to native page
 ]]--
 function KoptInterface:reflowToNativePosTransform(doc, pageno, abs_pos, rel_pos)
     local kc = self:getCachedContext(doc, pageno)
-    --kc:setDebug()
-    --DEBUG("transform reflowed pos", abs_pos, rel_pos)
     local npos = {}
     npos.x, npos.y = kc:reflowToNativePosTransform(abs_pos.x, abs_pos.y, rel_pos.x, rel_pos.y)
-    --DEBUG("transformed native pos", npos)
     return npos
 end
 
@@ -995,12 +1008,9 @@ function KoptInterface:getTextFromReflowPositions(doc, native_boxes, pos0, pos1)
     local reflowed_pos_rel0 = getBoxRelativePosition(scratch_reflowed_word_box0.box, reflowed_word_box0.box)
     local reflowed_pos_abs1 = scratch_reflowed_word_box1.box:center()
     local reflowed_pos_rel1 = getBoxRelativePosition(scratch_reflowed_word_box1.box, reflowed_word_box1.box)
-    --DEBUG("absolute positions", reflowed_pos_abs0, reflowed_pos_abs1)
-    --DEBUG("relative positions", reflowed_pos_rel0, reflowed_pos_rel1)
 
     local native_pos0 = self:reflowToNativePosTransform(doc, pageno, reflowed_pos_abs0, reflowed_pos_rel0)
     local native_pos1 = self:reflowToNativePosTransform(doc, pageno, reflowed_pos_abs1, reflowed_pos_rel1)
-    --DEBUG("native positions", native_pos0, native_pos1)
 
     local reflowed_text_boxes = self:getTextFromBoxes(reflowed_page_boxes, pos0, pos1)
     local native_text_boxes = self:getTextFromBoxes(native_boxes, native_pos0, native_pos1)
@@ -1087,6 +1097,7 @@ local function all_matches(boxes, pattern, caseInsensitive)
     local function match(i, j)
         local pindex = 1
         local matched_indices = {}
+        if #plist == 0 then return end
         while true do
             if #boxes[i] < j then
                 j = j - #boxes[i]
@@ -1123,7 +1134,6 @@ end
 function KoptInterface:findAllMatches(doc, pattern, caseInsensitive, page)
     local text_boxes = doc:getPageTextBoxes(page)
     if not text_boxes then return end
-    --DEBUG("boxes", text_boxes)
     local matches = {}
     for indices in all_matches(text_boxes or {}, pattern, caseInsensitive) do
         for _, index in ipairs(indices) do
@@ -1142,7 +1152,7 @@ function KoptInterface:findAllMatches(doc, pattern, caseInsensitive, page)
 end
 
 function KoptInterface:findText(doc, pattern, origin, reverse, caseInsensitive, pageno)
-    DEBUG("Koptinterface: find text", pattern, origin, reverse, caseInsensitive, pageno)
+    logger.dbg("Koptinterface: find text", pattern, origin, reverse, caseInsensitive, pageno)
     local last_pageno = doc:getPageCount()
     local start_page, end_page
     if reverse == 1 then

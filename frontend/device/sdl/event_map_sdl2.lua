@@ -6,8 +6,9 @@ return {
     [28] = "Y", [29] = "Z", [30] = "1", [31] = "2", [32] = "3", [33] = "4",
     [34] = "5", [35] = "6", [36] = "7", [37] = "8", [38] = "9", [39] = "0",
 
-    [42] = "Back", -- Backspace
-    [40] = "Enter", -- Enter
+    [42] = "Backspace", -- Backspace
+    [41] = "Back", -- Escape
+    [40] = "Press", -- Enter
     [225] = "Shift", -- left shift
     [55] = ".",
     [56] = "/",
@@ -16,6 +17,7 @@ return {
     [44] = " ", -- Spacebar
     [58] = "Menu", -- F[1]
     [59] = "Power", -- F[2]
+    [61] = "F4", -- F[4]
     [63] = "LPgBack", -- F[6]
     [64] = "LPgFwd", -- F[7]
     [68] = "VPlus", -- F[11]
@@ -26,8 +28,11 @@ return {
     [75] = "RPgBack", -- normal PageUp
     [80] = "Left", -- arrow left
     [79] = "Right", -- arrow right
-    [77] = "Press", -- End (above arrows)
+    [77] = "End", -- End (above arrows)
     [81] = "Down", -- arrow down
     [78] = "RPgFwd", -- normal PageDown
     [76] = "Del", -- Delete
+    [101] = "ContextMenu", -- Context menu key
+    [224] = "Ctrl", -- Left Ctrl
+    [228] = "Ctrl", -- Right Ctrl
 }

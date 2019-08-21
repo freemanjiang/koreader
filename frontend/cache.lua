@@ -1,10 +1,16 @@
 --[[
 A global LRU cache
 ]]--
-local md5 = require("ffi/MD5")
-local lfs = require("libs/libkoreader-lfs")
+
 local DataStorage = require("datastorage")
-local DEBUG = require("dbg")
+local lfs = require("libs/libkoreader-lfs")
+local logger = require("logger")
+local md5 = require("ffi/MD5")
+
+local CanvasContext = require("document/canvascontext")
+if CanvasContext.should_restrict_JIT then
+    require("jit").off(true, true)
+end
 
 local function calcFreeMem()
     local meminfo = io.open("/proc/meminfo", "r")
@@ -94,8 +100,8 @@ function Cache:insert(key, object)
     -- make sure that one key only exists once: delete existing
     self:drop(key)
     -- guarantee that we have enough memory in cache
-    if(object.size > self.max_memsize) then
-        DEBUG("too much memory claimed for", key)
+    if (object.size > self.max_memsize) then
+        logger.warn("too much memory claimed for", key)
         return
     end
     -- delete objects that least recently used
@@ -131,7 +137,7 @@ function Cache:check(key, ItemClass)
                 self:insert(key, item)
                 return item
             else
-                DEBUG("discard cache", msg)
+                logger.warn("discard cache", msg)
             end
         end
     end
@@ -157,10 +163,16 @@ function Cache:serialize()
     local cache_size = 0
     for _, key in ipairs(self.cache_order) do
         local cache_item = self.cache[key]
+
         -- only dump cache item that requests serialization explicitly
         if cache_item.persistent and cache_item.dump then
-            DEBUG("dump cache item", key)
-            cache_size = cache_item:dump(cache_path..md5.sum(key)) or 0
+            local cache_full_path = cache_path..md5.sum(key)
+            local cache_file_exists = lfs.attributes(cache_full_path)
+
+            if cache_file_exists then break end
+
+            logger.dbg("dump cache item", key)
+            cache_size = cache_item:dump(cache_full_path) or 0
             if cache_size > 0 then break end
         end
     end

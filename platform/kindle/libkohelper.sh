@@ -2,115 +2,71 @@
 
 ## A bit of helper functions...
 # Check which type of init system we're running on
-if [ -d /etc/upstart ] ; then
-	INIT_TYPE="upstart"
-	# We'll need that for logging
-	[ -f /etc/upstart/functions ] && source /etc/upstart/functions
+if [ -d /etc/upstart ]; then
+    export INIT_TYPE="upstart"
+    # We'll need that for logging
+    # shellcheck disable=SC1091
+    [ -f /etc/upstart/functions ] && . /etc/upstart/functions
 else
-	INIT_TYPE="sysv"
-	# We'll need that for logging
-	[ -f /etc/rc.d/functions ] && source /etc/rc.d/functions
+    export INIT_TYPE="sysv"
+    # We'll need that for logging
+    # shellcheck disable=SC1091
+    [ -f /etc/rc.d/functions ] && . /etc/rc.d/functions
 fi
 
-# We need to get the proper constants for our model...
-kmodel="$(cut -c3-4 /proc/usid)"
-case "${kmodel}" in
-	"13" | "54" | "2A" | "4F" | "52" | "53" )
-		# Voyage...
-		SCREEN_X_RES=1088	# NOTE: Yes, 1088, not 1072 or 1080...
-		SCREEN_Y_RES=1448
-		EIPS_X_RES=16
-		EIPS_Y_RES=24		# Manually mesured, should be accurate.
-	;;
-	"24" | "1B" | "1D" | "1F" | "1C" | "20" | "D4" | "5A" | "D5" | "D6" | "D7" | "D8" | "F2" | "17" | "60" | "F4" | "F9" | "62" | "61" | "5F" )
-		# PaperWhite...
-		SCREEN_X_RES=768	# NOTE: Yes, 768, not 758...
-		SCREEN_Y_RES=1024
-		EIPS_X_RES=16
-		EIPS_Y_RES=24		# Manually mesured, should be accurate.
-	;;
-	"C6" | "DD" )
-		# KT2...
-		SCREEN_X_RES=608
-		SCREEN_Y_RES=800
-		EIPS_X_RES=16
-		EIPS_Y_RES=24
-	;;
-	"0F" | "11" | "10" | "12" )
-		# Touch
-		SCREEN_X_RES=600	# _v_width @ upstart/functions
-		SCREEN_Y_RES=800	# _v_height @ upstart/functions
-		EIPS_X_RES=12		# from f_puts @ upstart/functions
-		EIPS_Y_RES=20		# from f_puts @ upstart/functions
-	;;
-	* )
-		# Handle legacy devices...
-		if [ -f "/etc/rc.d/functions" ] && grep "EIPS" "/etc/rc.d/functions" > /dev/null 2>&1 ; then
-			# Already done...
-			#. /etc/rc.d/functions
-			echo "foo" >/dev/null
-		else
-			# Try the new device ID scheme...
-			kmodel="$(cut -c4-6 /proc/usid)"
-			case "${kmodel}" in
-				"0G1" | "0G2" | "0G4" | "0G5" | "0G6" | "0G7" )
-					# PW3... NOTE: Hopefully matches the KV...
-					SCREEN_X_RES=1088
-					SCREEN_Y_RES=1448
-					EIPS_X_RES=16
-					EIPS_Y_RES=24
-				;;
-				* )
-					# Fallback... We shouldn't ever hit that.
-					SCREEN_X_RES=600
-					SCREEN_Y_RES=800
-					EIPS_X_RES=12
-					EIPS_Y_RES=20
-				;;
-			esac
-		fi
-	;;
-esac
-# And now we can do the maths ;)
-EIPS_MAXCHARS="$((${SCREEN_X_RES} / ${EIPS_X_RES}))"
-EIPS_MAXLINES="$((${SCREEN_Y_RES} / ${EIPS_Y_RES}))"
-
 # Adapted from libkh[5]
-eips_print_bottom_centered()
-{
-	# We need at least two args
-	if [ $# -lt 2 ] ; then
-		echo "not enough arguments passed to eips_print_bottom ($# while we need at least 2)"
-		return
-	fi
+## Check if we have an FBInk binary available somewhere...
+# Default to something that won't horribly blow up...
+FBINK_BIN="true"
+for my_dir in libkh/bin koreader linkss/bin linkfonts/bin usbnet/bin; do
+    my_fbink="/mnt/us/${my_dir}/fbink"
+    if [ -x "${my_fbink}" ]; then
+        FBINK_BIN="${my_fbink}"
+        # Got it!
+        break
+    fi
+done
 
-	kh_eips_string="${1}"
-	kh_eips_y_shift_up="${2}"
+has_fbink() {
+    # Because the fallback is the "true" binary/shell built-in ;).
+    if [ "${FBINK_BIN}" != "true" ]; then
+        # Got it!
+        return 0
+    fi
 
-	# Get the real string length now
-	kh_eips_strlen="${#kh_eips_string}"
+    # If we got this far, we don't have fbink installed
+    return 1
+}
 
-	# Add the right amount of left & right padding, since we're centered, and eips doesn't trigger a full refresh,
-	# so we'll have to padd our string with blank spaces to make sure two consecutive messages don't run into each other
-	kh_padlen="$(((${EIPS_MAXCHARS} - ${kh_eips_strlen}) / 2))"
+# NOTE: Yeah, the name becomes a bit of a lie now that we're exclusively using FBInk ;p.
+eips_print_bottom_centered() {
+    # We need at least two args
+    if [ $# -lt 2 ]; then
+        echo "not enough arguments passed to eips_print_bottom ($# while we need at least 2)"
+        return
+    fi
 
-	# Left padding...
-	while [ ${#kh_eips_string} -lt $((${kh_eips_strlen} + ${kh_padlen})) ] ; do
-		kh_eips_string=" ${kh_eips_string}"
-	done
+    kh_eips_string="${1}"
+    kh_eips_y_shift_up="${2}"
 
-	# Right padding (crop to the edge of the screen)
-	while [ ${#kh_eips_string} -lt ${EIPS_MAXCHARS} ] ; do
-		kh_eips_string="${kh_eips_string} "
-	done
+    # Unlike eips, we need at least a single space to even try to print something ;).
+    if [ "${kh_eips_string}" = "" ]; then
+        kh_eips_string=" "
+    fi
 
-	# Sleep a tiny bit to workaround the logic in the 'new' (K4+) eInk controllers that tries to bundle updates,
-	# otherwise it may drop part of our messages because of other screen updates from KUAL...
-	# Unless we really don't want to sleep, for special cases...
-	if [ ! -n "${EIPS_NO_SLEEP}" ] ; then
-		usleep 150000	# 150ms
-	fi
+    # Sleep a tiny bit to workaround the logic in the 'new' (K4+) eInk controllers that tries to bundle updates,
+    # otherwise it may drop part of our messages because of other screen updates from KUAL...
+    # Unless we really don't want to sleep, for special cases...
+    if [ -z "${EIPS_NO_SLEEP}" ]; then
+        usleep 150000 # 150ms
+    fi
 
-	# And finally, show our formatted message centered on the bottom of the screen (NOTE: Redirect to /dev/null to kill unavailable character & pixel not in range warning messages)
-	eips 0 $((${EIPS_MAXLINES} - 2 - ${kh_eips_y_shift_up})) "${kh_eips_string}" >/dev/null
+    # NOTE: FBInk will handle the padding. FBInk's default font is square, not tall like eips,
+    #       so we compensate by tweaking the baseline ;). This matches the baseline we use on Kobo, too.
+    if has_fbink; then
+        ${FBINK_BIN} -qpm -y $((-4 - kh_eips_y_shift_up)) "${kh_eips_string}"
+    else
+        # Crappy fallback
+        eips 0 0 "${kh_eips_string}" >/dev/null
+    fi
 }

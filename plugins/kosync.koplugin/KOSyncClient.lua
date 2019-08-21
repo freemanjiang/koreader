@@ -7,7 +7,7 @@ local KOSyncClient = {
 }
 
 function KOSyncClient:new(o)
-    local o = o or {}
+    if o == nil then o = {} end
     setmetatable(o, self)
     self.__index = self
     if o.init then o:init() end
@@ -15,12 +15,13 @@ function KOSyncClient:new(o)
 end
 
 function KOSyncClient:init()
+    require("socket.http").TIMEOUT = 1
     local Spore = require("Spore")
     self.client = Spore.new_from_spec(self.service_spec, {
         base_url = self.custom_url,
     })
     package.loaded['Spore.Middleware.GinClient'] = {}
-    require('Spore.Middleware.GinClient').call = function(self, req)
+    require('Spore.Middleware.GinClient').call = function(_, req)
         req.headers['accept'] = "application/vnd.koreader.v1+json"
     end
     package.loaded['Spore.Middleware.KOSyncAuth'] = {}
@@ -89,12 +90,19 @@ function KOSyncClient:authorize(username, password)
         return res.status == 200, res.body
     else
         DEBUG("err:", res)
-        return false, res
+        return false, res.body
     end
 end
 
-function KOSyncClient:update_progress(username, password,
-        document, progress, percentage, device, callback)
+function KOSyncClient:update_progress(
+        username,
+        password,
+        document,
+        progress,
+        percentage,
+        device,
+        device_id,
+        callback)
     self.client:reset_middlewares()
     self.client:enable('Format.JSON')
     self.client:enable("GinClient")
@@ -109,13 +117,14 @@ function KOSyncClient:update_progress(username, password,
                 progress = progress,
                 percentage = percentage,
                 device = device,
+                device_id = device_id,
             })
         end)
         if ok then
             callback(res.status == 200, res.body)
         else
             DEBUG("err:", res)
-            callback(false, res)
+            callback(false, res.body)
         end
     end)
     self.client:enable("AsyncHTTP", {thread = co})
@@ -123,8 +132,11 @@ function KOSyncClient:update_progress(username, password,
     if UIManager.looper then UIManager:setInputTimeout() end
 end
 
-function KOSyncClient:get_progress(username, password,
-        document, callback)
+function KOSyncClient:get_progress(
+        username,
+        password,
+        document,
+        callback)
     self.client:reset_middlewares()
     self.client:enable('Format.JSON')
     self.client:enable("GinClient")
@@ -142,7 +154,7 @@ function KOSyncClient:get_progress(username, password,
             callback(res.status == 200, res.body)
         else
             DEBUG("err:", res)
-            callback(false, res)
+            callback(false, res.body)
         end
     end)
     self.client:enable("AsyncHTTP", {thread = co})

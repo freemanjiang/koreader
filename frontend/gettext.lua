@@ -1,5 +1,5 @@
 local isAndroid, android = pcall(require, "android")
-local DEBUG = require("dbg")
+local logger = require("logger")
 
 local GetText = {
     translation = {},
@@ -39,8 +39,10 @@ function GetText_mt.__index.changeLang(new_lang)
     GetText.translation = {}
     GetText.current_lang = "C"
 
-    -- the "C" locale disables localization alltogether
-    if new_lang == "C" or new_lang == nil then return end
+    -- the "C" locale disables localization altogether
+    -- can be various things such as `en_US` or `en_US:en`
+    if new_lang == "C" or new_lang == nil or new_lang == ""
+       or new_lang:match("^en_US") == "en_US" then return end
 
     -- strip encoding suffix in locale like "zh_CN.utf8"
     new_lang = new_lang:sub(1, new_lang:find(".%."))
@@ -49,8 +51,8 @@ function GetText_mt.__index.changeLang(new_lang)
     local po = io.open(file, "r")
 
     if not po then
-        DEBUG("cannot open translation file " .. file)
-        return
+        logger.dbg("cannot open translation file:", file)
+        return false
     end
 
     local data = {}
@@ -79,6 +81,8 @@ function GetText_mt.__index.changeLang(new_lang)
                 if what and s then
                     -- unescape \n or msgid won't match
                     s = s:gsub("\\n", "\n")
+                    -- unescape " or msgid won't match
+                    s = s:gsub('\\"', '"')
                     data[what] = (data[what] or "") .. s
                 end
             end
@@ -102,9 +106,9 @@ end
 if isAndroid then
     local ffi = require("ffi")
     local buf = ffi.new("char[?]", 16)
-    ffi.C.AConfiguration_getLanguage(android.app.config, buf)
+    android.lib.AConfiguration_getLanguage(android.app.config, buf)
     local lang = ffi.string(buf)
-    ffi.C.AConfiguration_getCountry(android.app.config, buf)
+    android.lib.AConfiguration_getCountry(android.app.config, buf)
     local country = ffi.string(buf)
     if lang and country then
         GetText.changeLang(lang.."_"..country)

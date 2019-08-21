@@ -1,5 +1,5 @@
 {
-    "base_url" : "https://vislab.bjmu.edu.cn:7200/",
+    "base_url" : "https://sync.koreader.rocks:443/",
     "name" : "koreader-sync-api",
     "methods" : {
         "register" : {
@@ -28,12 +28,14 @@
                 "progress",
                 "percentage",
                 "device",
+                "device_id",
             ],
             "payload" : [
                 "document",
                 "progress",
                 "percentage",
                 "device",
+                "device_id",
             ],
             "expected_status" : [200, 202, 401]
         },

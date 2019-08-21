@@ -1,4 +1,4 @@
-local KoptOptions = require("ui/data/koptoptions")
+local Blitbuffer = require("ffi/blitbuffer")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
 
@@ -8,8 +8,10 @@ local DjvuDocument = Document:new{
     is_djvu = true,
     djvulibre_cache_size = nil,
     dc_null = DrawContext.new(),
-    options = KoptOptions,
     koptinterface = nil,
+    color_bb_type = Blitbuffer.TYPE_BBRGB24,
+    provider = "djvulibre",
+    provider_name = "DjVu Libre",
 }
 
 -- check DjVu magic string to validate
@@ -23,15 +25,16 @@ local function validDjvuFile(filename)
 end
 
 function DjvuDocument:init()
+    self:updateColorRendering()
     local djvu = require("libs/libkoreader-djvu")
     self.koptinterface = require("document/koptinterface")
-    self.configurable:loadDefaults(self.options)
+    self.koptinterface:setDefaultConfigurable(self.configurable)
     if not validDjvuFile(self.file) then
         error("Not a valid DjVu file")
     end
 
     local ok
-    ok, self._document = pcall(djvu.openDocument, self.file, self.djvulibre_cache_size)
+    ok, self._document = pcall(djvu.openDocument, self.file, self.render_color, self.djvulibre_cache_size)
     if not ok then
         error(self._document)  -- will contain error message
     end
@@ -39,6 +42,30 @@ function DjvuDocument:init()
     self.info.has_pages = true
     self.info.configurable = true
     self:_readMetadata()
+end
+
+function DjvuDocument:updateColorRendering()
+    Document.updateColorRendering(self) -- will set self.render_color
+    if self._document then
+        self._document:setColorRendering(self.render_color)
+    end
+end
+
+function DjvuDocument:getProps()
+    local props = self._document:getMetadata()
+    local _, _, docname = self.file:find(".*/(.*)")
+    docname = docname or self.file
+
+    -- According to djvused(1), the convention is that
+    -- BibTex keys are always lowercase and DocInfo capitalized
+    props.title = props.title or props.Title or docname:match("(.*)%.")
+    props.authors = props.author or props.Author
+    props.series = props.series or props.Series
+    props.language = props.language or props.Language
+    props.keywords = props.keywords or props.Keywords
+    props.description = props.description or props.Description
+
+    return props
 end
 
 function DjvuDocument:getPageTextBoxes(pageno)
@@ -69,8 +96,8 @@ function DjvuDocument:getOCRText(pageno, tboxes)
     return self.koptinterface:getOCRText(self, pageno, tboxes)
 end
 
-function DjvuDocument:getPageRegions(pageno)
-    return self.koptinterface:getPageRegions(self, pageno)
+function DjvuDocument:getPageBlock(pageno, x, y)
+    return self.koptinterface:getPageBlock(self, pageno, x, y)
 end
 
 function DjvuDocument:getUsedBBox(pageno)
@@ -118,8 +145,8 @@ function DjvuDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma
 end
 
 function DjvuDocument:register(registry)
-    registry:addProvider("djvu", "application/djvu", self)
-    registry:addProvider("djv", "application/djvu", self)
+    registry:addProvider("djv", "image/vnd.djvu", self, 100)
+    registry:addProvider("djvu", "image/vnd.djvu", self, 100)
 end
 
 return DjvuDocument

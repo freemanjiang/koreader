@@ -1,20 +1,24 @@
-require("commonrequire")
-local DocumentRegistry = require("document/documentregistry")
-local ReaderUI = require("apps/reader/readerui")
-local lfs = require("libs/libkoreader-lfs")
-local UIManager = require("ui/uimanager")
-local Screen = require("device").screen
-local Event = require("ui/event")
-local DEBUG = require("dbg")
-
 describe("ReaderScreenshot module", function()
+    local DocumentRegistry, ReaderUI, lfs, UIManager, Event
     local sample_epub = "spec/front/unit/data/leaves.epub"
     local readerui
     setup(function()
+        require("commonrequire")
+        DocumentRegistry = require("document/documentregistry")
+        ReaderUI = require("apps/reader/readerui")
+        lfs = require("libs/libkoreader-lfs")
+        UIManager = require("ui/uimanager")
+        Event = require("ui/event")
+
         readerui = ReaderUI:new{
             document = DocumentRegistry:openDocument(sample_epub),
         }
     end)
+
+    teardown(function()
+        readerui:handleEvent(Event:new("ChangeScreenMode", "portrait"))
+    end)
+
     it("should get screenshot in portrait", function()
         local name = "screenshots/reader_screenshot_portrait.png"
         readerui:handleEvent(Event:new("ChangeScreenMode", "portrait"))
@@ -24,7 +28,9 @@ describe("ReaderScreenshot module", function()
         UIManager:run()
         readerui.screenshot:onScreenshot(name)
         assert.truthy(lfs.attributes(name, "mode"))
+        UIManager:quit()
     end)
+
     it("should get screenshot in landscape", function()
         local name = "screenshots/reader_screenshot_landscape.png"
         readerui:handleEvent(Event:new("ChangeScreenMode", "landscape"))
@@ -34,5 +40,6 @@ describe("ReaderScreenshot module", function()
         UIManager:run()
         readerui.screenshot:onScreenshot(name)
         assert.truthy(lfs.attributes(name, "mode"))
+        UIManager:quit()
     end)
 end)

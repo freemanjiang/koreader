@@ -14,36 +14,37 @@ Configurable attributes:
  * rectcolor  -- infill color
  * ticks (list)  -- default to nil, use this if you want to insert markers
  * tick_width
- * last  -- maximum tick
+ * last  -- maximum tick, used with ticks
 
 Example:
 
     local foo_bar = ProgressWidget:new{
-        width = 400,
-        height = 10,
+        width = Screen:scaleBySize(400),
+        height = Screen:scaleBySize(10),
         percentage = 50/100,
     }
     UIManager:show(foo_bar)
 
 ]]
 
-local Widget = require("ui/widget/widget")
-local Geom = require("ui/geometry")
 local Blitbuffer = require("ffi/blitbuffer")
+local Geom = require("ui/geometry")
+local Widget = require("ui/widget/widget")
+local Screen = require("device").screen
 
 local ProgressWidget = Widget:new{
     width = nil,
     height = nil,
-    margin_h = 3,
-    margin_v = 1,
-    radius = 2,
-    bordersize = 1,
+    margin_h = Screen:scaleBySize(3),
+    margin_v = Screen:scaleBySize(1),
+    radius = Screen:scaleBySize(2),
+    bordersize = Screen:scaleBySize(1),
     bordercolor = Blitbuffer.COLOR_BLACK,
     bgcolor = Blitbuffer.COLOR_WHITE,
-    rectcolor = Blitbuffer.gray(0.7),
+    rectcolor = Blitbuffer.COLOR_DIM_GRAY,
     percentage = nil,
     ticks = nil,
-    tick_width = 3,
+    tick_width = Screen:scaleBySize(3),
     last = nil,
 }
 
@@ -58,6 +59,8 @@ function ProgressWidget:paintTo(bb, x, y)
         w = my_size.w,
         h = my_size.h
     }
+    if self.dimen.w == 0 or self.dimen.h == 0 then return end
+
     -- fill background
     bb:paintRoundedRect(x, y, my_size.w, my_size.h, self.bgcolor, self.radius)
     -- paint border
@@ -65,16 +68,21 @@ function ProgressWidget:paintTo(bb, x, y)
                    my_size.w, my_size.h,
                    self.bordersize, self.bordercolor, self.radius)
     -- paint percentage infill
-    bb:paintRect(x+self.margin_h, math.ceil(y+self.margin_v+self.bordersize),
+    if self.percentage >= 0 and self.percentage <= 1 then
+        bb:paintRect(x+self.margin_h, math.ceil(y+self.margin_v+self.bordersize),
                  math.ceil((my_size.w-2*self.margin_h)*self.percentage),
                  my_size.h-2*(self.margin_v+self.bordersize), self.rectcolor)
-    if self.ticks then
+    end
+    if self.ticks and self.last and self.last > 0 then
+        local bar_width = (my_size.w-2*self.margin_h)
+        local y_pos = y + self.margin_v + self.bordersize
+        local bar_height = my_size.h-2*(self.margin_v+self.bordersize)
         for i=1, #self.ticks do
             bb:paintRect(
-                x + (my_size.w-2*self.margin_h)*(self.ticks[i]/self.last),
-                y + self.margin_v + self.bordersize,
+                x + bar_width*(self.ticks[i]/self.last) + self.margin_h,
+                y_pos,
                 self.tick_width,
-                my_size.h-2*(self.margin_v+self.bordersize),
+                bar_height,
                 self.bordercolor)
         end
     end

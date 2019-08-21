@@ -1,21 +1,21 @@
-local CenterContainer = require("ui/widget/container/centercontainer")
-local BottomContainer = require("ui/widget/container/bottomcontainer")
-local TopContainer = require("ui/widget/container/topcontainer")
-local WidgetContainer = require("ui/widget/container/widgetcontainer")
-local InputContainer = require("ui/widget/container/inputcontainer")
-local FrameContainer = require("ui/widget/container/framecontainer")
-local HorizontalGroup = require("ui/widget/horizontalgroup")
-local HorizontalSpan = require("ui/widget/horizontalspan")
-local VerticalGroup = require("ui/widget/verticalgroup")
-local TextWidget = require("ui/widget/textwidget")
 local Blitbuffer = require("ffi/blitbuffer")
+local BottomContainer = require("ui/widget/container/bottomcontainer")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Font = require("ui/font")
-local Screen = Device.screen
+local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local Size = require("ui/size")
+local TextWidget = require("ui/widget/textwidget")
+local TopContainer = require("ui/widget/container/topcontainer")
+local VerticalGroup = require("ui/widget/verticalgroup")
+local WidgetContainer = require("ui/widget/container/widgetcontainer")
+local logger = require("logger")
 local util = require("util")
-local DEBUG = require("dbg")
-
+local Screen = Device.screen
 
 local PhysicalNumericKey = WidgetContainer:new{
     key = nil,
@@ -28,8 +28,8 @@ local PhysicalNumericKey = WidgetContainer:new{
 
     width = nil,
     height = nil,
-    bordersize = 2,
-    face = Font:getFace("infont", 22),
+    bordersize = Size.border.button,
+    face = Font:getFace("infont"),
     pkey_face = Font:getFace("infont", 14),
 }
 
@@ -42,7 +42,7 @@ function PhysicalNumericKey:init()
         margin = 0,
         bordersize = self.bordersize,
         background = Blitbuffer.COLOR_WHITE,
-        radius = 5,
+        radius = Size.radius.default,
         padding = 0,
         CenterContainer:new{
             dimen = Geom:new{
@@ -52,7 +52,7 @@ function PhysicalNumericKey:init()
             VerticalGroup:new{
                 label_widget,
                 TextWidget:new{
-                    fgcolor = Blitbuffer.COLOR_GREY,
+                    fgcolor = Blitbuffer.COLOR_DARK_GRAY,
                     text = self.physical_key_label,
                     face = self.pkey_face,
                 },
@@ -70,10 +70,10 @@ end
 local PhysicalKeyboard = InputContainer:new{
     is_always_active = true,
     inputbox = nil,  -- expect ui/widget/inputtext instance
-    bordersize = 2,
-    padding = 2,
+    bordersize = Size.border.button,
+    padding = Size.padding.button,
     height = math.max(Screen:getWidth(), Screen:getHeight())*0.33,
-    key_padding = Screen:scaleBySize(6),
+    key_padding = Size.padding.default,
 }
 
 function PhysicalKeyboard:init()
@@ -112,20 +112,20 @@ end
 function PhysicalKeyboard:onKeyPress(ev)
     local key = ev.key
     if key == "Back" then
-        DEBUG("TODO: exit keyboard")
+        logger.warn("TODO: exit keyboard")
     elseif key == "Del" then
         self.inputbox:delChar()
     else
         if self.key_transformer then
             key = self.key_transformer[key]
         end
-        self.inputbox:addChar(key)
+        self.inputbox:addChars(key)
     end
 end
 
 function PhysicalKeyboard:setupNumericMappingUI()
     local key_rows = VerticalGroup:new{}
-    local key_margin = 1
+    local key_margin = Size.margin.tiny
     local row_len = #self.mapping[1]
     local base_key_width = math.floor((self.width - row_len*(self.key_padding+2*key_margin) - 2*self.padding)/10)
     local base_key_height = math.floor((self.height - self.key_padding - 2*self.padding)/4)

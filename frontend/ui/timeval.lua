@@ -1,10 +1,44 @@
+--[[--
+A simple module to module to compare and do arithmetic with time values.
+
+@usage
+    local TimeVal = require("ui/timeval")
+
+    local tv_start = TimeVal:now()
+    -- Do some stuff.
+    -- You can add and subtract `TimeVal` objects.
+    local tv_duration = TimeVal:now() - tv_start
+    -- If you need more precision (like 2.5 s),
+    -- you can add the milliseconds to the seconds.
+    local tv_duration_seconds_float = tv_duration.sec + tv_duration.usec/1000000
+]]
+
+local dbg = require("dbg")
 local util = require("ffi/util")
 
+--[[--
+TimeVal object.
+
+@table TimeVal
+@int sec floored number of seconds
+@int usec remaining number of milliseconds
+]]
 local TimeVal = {
     sec = 0,
     usec = 0,
 }
 
+--[[--
+Creates a new TimeVal object.
+
+@usage
+    local timev = TimeVal:new{
+        sec = 10,
+        usec = 10000,
+    }
+
+@treturn TimeVal
+]]
 function TimeVal:new(from_o)
     local o = from_o or {}
     if o.sec == nil then
@@ -77,6 +111,12 @@ function TimeVal:__sub(time_b)
     return diff
 end
 
+dbg:guard(TimeVal, '__sub',
+          function(self, time_b)
+              assert(self.sec > time_b.sec or (self.sec == time_b.sec and self.usec >= time_b.usec),
+                     "Subtract the first timeval from the latest, not vice versa.")
+          end)
+
 function TimeVal:__add(time_b)
     local sum = TimeVal:new{}
 
@@ -98,6 +138,18 @@ function TimeVal:__add(time_b)
     return sum
 end
 
+--[[--
+Creates a new TimeVal object based on the current time.
+
+@usage
+    local TimeVal = require("ui/timeval")
+    local tv_start = TimeVal:now()
+    -- Do some stuff.
+    -- You can add and substract `TimeVal` objects.
+    local tv_duration = TimeVal:now() - tv_start
+
+@treturn TimeVal
+]]
 function TimeVal:now()
     local sec, usec = util.gettime()
     return TimeVal:new{sec = sec, usec = usec}

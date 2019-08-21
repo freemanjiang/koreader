@@ -1,36 +1,53 @@
-local InputContainer = require("ui/widget/container/inputcontainer")
-local FrameContainer = require("ui/widget/container/framecontainer")
-local CenterContainer = require("ui/widget/container/centercontainer")
-local TextWidget = require("ui/widget/textwidget")
-local Font = require("ui/font")
-local Geom = require("ui/geometry")
-local Device = require("device")
-local UIManager = require("ui/uimanager")
-local Input = require("device").input
-local Screen = require("device").screen
-local Blitbuffer = require("ffi/blitbuffer")
-
---[[
-Widget that displays a tiny notification on top of screen
+--[[--
+Widget that displays a tiny notification at the top of the screen.
 --]]
+
+local Blitbuffer = require("ffi/blitbuffer")
+local CenterContainer = require("ui/widget/container/centercontainer")
+local Device = require("device")
+local Font = require("ui/font")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local Size = require("ui/size")
+local TextWidget = require("ui/widget/textwidget")
+local UIManager = require("ui/uimanager")
+local Input = Device.input
+local Screen = Device.screen
+
 local Notification = InputContainer:new{
-    face = Font:getFace("infofont", 20),
+    face = Font:getFace("x_smallinfofont"),
     text = "Null Message",
     timeout = nil,
-    margin = 5,
-    padding = 5,
+    margin = Size.margin.default,
+    padding = Size.padding.default,
 }
 
 function Notification:init()
     if Device:hasKeys() then
         self.key_events = {
-            AnyKeyPressed = { { Input.group.Any }, seqtext = "any key", doc = "close dialog" }
+            AnyKeyPressed = { { Input.group.Any },
+                seqtext = "any key", doc = "close dialog" }
         }
     end
+    if Device:isTouchDevice() then
+        self.ges_events.TapClose = {
+            GestureRange:new{
+                ges = "tap",
+                range = Geom:new{
+                    x = 0, y = 0,
+                    w = Screen:getWidth(),
+                    h = Screen:getHeight(),
+                }
+            }
+        }
+    end
+
     -- we construct the actual content here because self.text is only available now
     local text_widget = TextWidget:new{
         text = self.text,
-        face = self.face
+        face = self.face,
     }
     local widget_size = text_widget:getSize()
     self[1] = CenterContainer:new{
@@ -56,7 +73,7 @@ end
 
 function Notification:onCloseWidget()
     UIManager:setDirty(nil, function()
-        return "partial", self[1][1].dimen
+        return "ui", self[1][1].dimen
     end)
     return true
 end
@@ -75,7 +92,20 @@ end
 function Notification:onAnyKeyPressed()
     -- triggered by our defined key events
     UIManager:close(self)
-    return true
+    if not self.timeout then
+        return true
+    end
+end
+
+function Notification:onTapClose()
+    UIManager:close(self)
+    -- If timeout (usually 1s or 2s), let it propagate so an underlying
+    -- widget can process the tap whether it's done at 1.9s or 2.1s
+    -- If no timout, don't propagate as this tap is most probably meant
+    -- at dismissing the notification
+    if not self.timeout then
+        return true
+    end
 end
 
 return Notification

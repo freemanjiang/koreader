@@ -1,21 +1,12 @@
-local Screen = require("device").screen
+local Device = require("device")
 local S = require("ui/data/strings")
+local optionsutil = require("ui/data/optionsutil")
 local _ = require("gettext")
-
-local function enable_if_equals(configurable, option, value)
-    return configurable[option] == value
-end
-
-local function enable_if_greater_than(configurable, option, value)
-    return configurable[option] > value
-end
-
-local function enable_if_less_than(configurable, option, value)
-    return configurable[option] < value
-end
+local Screen = Device.screen
 
 local KoptOptions = {
     prefix = 'kopt',
+    needs_redraw_on_change = true,
     {
         icon = "resources/icons/appbar.transform.rotate.right.large.png",
         options = {
@@ -27,7 +18,8 @@ local KoptOptions = {
                 args = {"portrait", "landscape"},
                 default_arg = "portrait",
                 current_func = function() return Screen:getScreenMode() end,
-                event = "SetScreenMode",
+                event = "SwapScreenMode",
+                name_text_hold_callback = optionsutil.showValues,
             }
         }
     },
@@ -37,13 +29,14 @@ local KoptOptions = {
             {
                 name = "trim_page",
                 name_text = S.PAGE_CROP,
-                width = 261,
-                toggle = {S.MANUAL, S.AUTO, S.SEMIAUTO},
+                toggle = {S.MANUAL, S.AUTO, S.SEMIAUTO, S.NONE},
                 alternate = false,
-                values = {0, 1, 2},
+                values = {0, 1, 2, 3},
                 default_value = DKOPTREADER_CONFIG_TRIM_PAGE,
+                enabled_func = Device.isTouchDevice,
                 event = "PageCrop",
-                args = {"manual", "auto", "semi-auto"},
+                args = {"manual", "auto", "semi-auto", "none"},
+                name_text_hold_callback = optionsutil.showValues,
             }
         }
     },
@@ -52,12 +45,13 @@ local KoptOptions = {
         options = {
             {
                 name = "page_scroll",
-                name_text = S.SCROLL_MODE,
-                toggle = {S.ON, S.OFF},
+                name_text = S.VIEW_MODE,
+                toggle = {S.VIEW_SCROLL, S.VIEW_PAGE},
                 values = {1, 0},
                 default_value = DSCROLL_MODE,
-                event = "ToggleScrollMode",
+                event = "SetScrollMode",
                 args = {true, false},
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "full_screen",
@@ -68,6 +62,7 @@ local KoptOptions = {
                 event = "SetFullScreen",
                 args = {true, false},
                 show = false,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "page_margin",
@@ -76,6 +71,7 @@ local KoptOptions = {
                 values = {0.05, 0.10, 0.25},
                 default_value = DKOPTREADER_CONFIG_PAGE_MARGIN,
                 event = "MarginUpdate",
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "line_spacing",
@@ -84,6 +80,7 @@ local KoptOptions = {
                 values = {1.0, 1.2, 1.4},
                 default_value = DKOPTREADER_CONFIG_LINE_SPACING,
                 advanced = true,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "max_columns",
@@ -96,8 +93,9 @@ local KoptOptions = {
                 values = {1,2,3},
                 default_value = DKOPTREADER_CONFIG_MAX_COLUMNS,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "justification",
@@ -113,8 +111,10 @@ local KoptOptions = {
                 default_value = DKOPTREADER_CONFIG_JUSTIFICATION,
                 advanced = true,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                labels = {S.AUTO, S.LEFT, S.CENTER, S.RIGHT, S.JUSTIFY},
+                name_text_hold_callback = optionsutil.showValues,
             },
         }
     },
@@ -132,22 +132,29 @@ local KoptOptions = {
                 default_value = DKOPTREADER_CONFIG_FONT_SIZE,
                 event = "FontSizeUpdate",
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
             },
             {
                 name = "font_fine_tune",
                 name_text = S.FONTSIZE_FINE_TUNING,
-                toggle = {S.DECREASE, S.INCREASE},
+                toggle = Device:isTouchDevice() and {S.DECREASE, S.INCREASE} or nil,
+                item_text = not Device:isTouchDevice() and {S.DECREASE, S.INCREASE} or nil,
                 values = {-0.05, 0.05},
                 default_value = 0.05,
                 event = "FineTuningFontSize",
                 args = {-0.05, 0.05},
                 alternate = false,
-                height = 60,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = function(configurable, __, prefix)
+                    local opt = {
+                        name = "font_size",
+                        name_text = _("Font Size"),
+                    }
+                    optionsutil.showValues(configurable, opt, prefix)
+                end
             }
         }
     },
@@ -157,14 +164,14 @@ local KoptOptions = {
             {
                 name = "contrast",
                 name_text = S.CONTRAST,
-                name_align_right = 0.25,
-                item_text = {S.LIGHTER, S.DEFAULT, S.DARKER, S.DARKEST},
-                item_font_size = 18,
-                item_align_center = 0.7,
-                values = {1.5, 1.0, 0.5, 0.2},
+                buttonprogress = true,
+                values = {1/0.8, 1/1.0, 1/1.5, 1/2.0, 1/3.0, 1/4.0, 1/6.0, 1/9.0},
+                default_pos = 2,
                 default_value = DKOPTREADER_CONFIG_CONTRAST,
                 event = "GammaUpdate",
-                args = {0.8, 1.0, 2.0, 4.0},
+                args = {0.8, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 9.0},
+                labels = {0.8, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 9.0},
+                name_text_hold_callback = optionsutil.showValues,
             }
         }
     },
@@ -187,7 +194,8 @@ local KoptOptions = {
                     {
                         event = "InitScrollPageStates",
                     },
-                }
+                },
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "page_opt",
@@ -195,6 +203,9 @@ local KoptOptions = {
                 toggle = {S.ON, S.OFF},
                 values = {1, 0},
                 default_value = 0,
+                name_text_hold_callback = optionsutil.showValues,
+                help_text = _([[Remove watermarks from the rendered document.
+This can also be used to remove some gray background or to convert a grayscale or color document to black & white and get more contrast for easier reading.]]),
             },
             {
                 name="doc_language",
@@ -204,6 +215,8 @@ local KoptOptions = {
                 default_value = DKOPTREADER_CONFIG_DOC_DEFAULT_LANG_CODE,
                 event = "DocLangUpdate",
                 args = DKOPTREADER_CONFIG_DOC_LANGS_CODE,
+                name_text_hold_callback = optionsutil.showValues,
+                help_text = _([[(Used by the OCR engine.)]]),
             },
             {
                 name = "word_spacing",
@@ -212,8 +225,9 @@ local KoptOptions = {
                 values = DKOPTREADER_CONFIG_WORD_SPACINGS,
                 default_value = DKOPTREADER_CONFIG_DEFAULT_WORD_SPACING,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "writing_direction",
@@ -222,8 +236,9 @@ local KoptOptions = {
                 values = {0, 1, 2},
                 default_value = 0,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "quality",
@@ -233,8 +248,19 @@ local KoptOptions = {
                 default_value = DKOPTREADER_CONFIG_RENDER_QUALITY,
                 advanced = true,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
+            },
+            {
+                name = "hw_dithering",
+                name_text = S.HW_DITHERING,
+                toggle = {S.ON, S.OFF},
+                values = {1, 0},
+                default_value = 0,
+                advanced = true,
+                show = Device:hasEinkScreen() and Device:canHWDither(),
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "forced_ocr",
@@ -243,6 +269,7 @@ local KoptOptions = {
                 values = {1, 0},
                 default_value = 0,
                 advanced = true,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "defect_size",
@@ -253,8 +280,9 @@ local KoptOptions = {
                 event = "DefectSizeUpdate",
                 show = false,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "auto_straighten",
@@ -264,8 +292,9 @@ local KoptOptions = {
                 default_value = DKOPTREADER_CONFIG_AUTO_STRAIGHTEN,
                 show = false,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
             },
             {
                 name = "detect_indent",
@@ -275,8 +304,9 @@ local KoptOptions = {
                 default_value = DKOPTREADER_CONFIG_DETECT_INDENT,
                 show = false,
                 enabled_func = function(configurable)
-                    return enable_if_equals(configurable, "text_wrap", 1)
+                    return optionsutil.enableIfEquals(configurable, "text_wrap", 1)
                 end,
+                name_text_hold_callback = optionsutil.showValues,
             },
         }
     },

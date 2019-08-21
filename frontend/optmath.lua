@@ -1,8 +1,12 @@
 --[[--
 Simple math helper functions
-]]--
+]]
+
+local bit = require("bit")
 
 local Math = {}
+
+local band = bit.band
 
 function Math.roundAwayFromZero(num)
     if num > 0 then
@@ -17,7 +21,7 @@ function Math.round(num)
 end
 
 function Math.oddEven(number)
-    if number % 2 == 1 then
+    if band(number, 1) == 1 then
         return "odd"
     else
         return "even"
@@ -45,18 +49,26 @@ local function tmin_max(tab, func, op)
     return index, value
 end
 
---[[
-Return the minimum element of a table.
+--[[--
+Returns the minimum element of a table.
 The optional argument func specifies a one-argument ordering function.
-]]--
+
+@tparam table tab
+@tparam func func
+@treturn dynamic minimum element of a table
+]]
 function Math.tmin(tab, func)
     return tmin_max(tab, func, "min")
 end
 
---[[
-Return the maximum element of a table.
+--[[--
+Returns the maximum element of a table.
 The optional argument func specifies a one-argument ordering function.
-]]--
+
+@tparam table tab
+@tparam func func
+@treturn dynamic maximum element of a table
+]]
 function Math.tmax(tab, func)
     return tmin_max(tab, func, "max")
 end

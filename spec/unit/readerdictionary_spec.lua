@@ -1,16 +1,17 @@
-require("commonrequire")
-local DocumentRegistry = require("document/documentregistry")
-local ReaderUI = require("apps/reader/readerui")
-local lfs = require("libs/libkoreader-lfs")
-local UIManager = require("ui/uimanager")
-local Screen = require("device").screen
-local Event = require("ui/event")
-local DEBUG = require("dbg")
-
 describe("Readerdictionary module", function()
-    local sample_epub = "spec/front/unit/data/leaves.epub"
+    local DocumentRegistry, ReaderUI, UIManager, Screen
+
+    setup(function()
+        require("commonrequire")
+        DocumentRegistry = require("document/documentregistry")
+        ReaderUI = require("apps/reader/readerui")
+        UIManager = require("ui/uimanager")
+        Screen = require("device").screen
+    end)
+
     local readerui, rolling, dictionary
     setup(function()
+        local sample_epub = "spec/front/unit/data/leaves.epub"
         readerui = ReaderUI:new{
             document = DocumentRegistry:openDocument(sample_epub),
         }
@@ -21,7 +22,7 @@ describe("Readerdictionary module", function()
         local name = "screenshots/reader_dictionary.png"
         UIManager:quit()
         UIManager:show(readerui)
-        rolling:gotoPage(100)
+        rolling:onGotoPage(100)
         dictionary:onLookupWord("test")
         UIManager:scheduleIn(1, function()
             UIManager:close(dictionary.dict_window)

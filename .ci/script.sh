@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 
 CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
 source "${CI_DIR}/common.sh"
 
-travis_retry make fetchthirdparty
-make all
-retry_cmd 6 make testfront
-set +o pipefail
-luajit $(which luacheck) --no-color -q frontend | tee ./luacheck.out
-test $(grep Total ./luacheck.out | awk '{print $2}') -le 63
+echo -e "\\n${ANSI_GREEN}make fetchthirdparty"
+bash "${CI_DIR}/fetch.sh"
+
+echo -e "\\n${ANSI_GREEN}static checks"
+bash "${CI_DIR}/check.sh"
+
+echo -e "\\n${ANSI_GREEN}make all"
+bash "${CI_DIR}/build.sh"
+
+echo -e "\\n${ANSI_GREEN}make testfront"
+bash "${CI_DIR}/test.sh"

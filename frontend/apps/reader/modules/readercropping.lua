@@ -1,18 +1,18 @@
-local InputContainer = require("ui/widget/container/inputcontainer")
-local UIManager = require("ui/uimanager")
-local Geom = require("ui/geometry")
-local Event = require("ui/event")
-local Screen = require("device").screen
-local LeftContainer = require("ui/widget/container/leftcontainer")
-local RightContainer = require("ui/widget/container/rightcontainer")
-local FrameContainer = require("ui/widget/container/framecontainer")
-local VerticalGroup = require("ui/widget/verticalgroup")
-local HorizontalGroup = require("ui/widget/horizontalgroup")
 local BBoxWidget = require("ui/widget/bboxwidget")
-local HorizontalSpan = require("ui/widget/horizontalspan")
-local Button = require("ui/widget/button")
-local Math = require("optmath")
 local Blitbuffer = require("ffi/blitbuffer")
+local Button = require("ui/widget/button")
+local Event = require("ui/event")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local HorizontalGroup = require("ui/widget/horizontalgroup")
+local HorizontalSpan = require("ui/widget/horizontalspan")
+local LeftContainer = require("ui/widget/container/leftcontainer")
+local Math = require("optmath")
+local RightContainer = require("ui/widget/container/rightcontainer")
+local UIManager = require("ui/uimanager")
+local VerticalGroup = require("ui/widget/verticalgroup")
+local Screen = require("device").screen
 
 local PageCropDialog = VerticalGroup:new{
     ok_text = "OK",
@@ -28,8 +28,6 @@ function PageCropDialog:init()
         text = self.ok_text,
         callback = self.ok_callback,
         width = self.button_width,
-        bordersize = 2,
-        radius = 7,
         text_font_face = "cfont",
         text_font_size = 20,
         show_parent = self,
@@ -38,8 +36,6 @@ function PageCropDialog:init()
         text = self.cancel_text,
         callback = self.cancel_callback,
         width = self.button_width,
-        bordersize = 2,
-        radius = 7,
         text_font_face = "cfont",
         text_font_size = 20,
         show_parent = self,
@@ -77,6 +73,7 @@ function PageCropDialog:onShow()
     return true
 end
 
+
 local ReaderCropping = InputContainer:new{}
 
 function ReaderCropping:onPageCrop(mode)
@@ -88,12 +85,17 @@ function ReaderCropping:onPageCrop(mode)
             self:setCropZoomMode(true)
         end
         return
+    elseif mode == "none" then
+        if self.document.configurable.text_wrap ~= 1 then
+            self.ui:handleEvent(Event:new("SetZoomMode", "pagewidth", "cropping"))
+        end
+        return
     end
     -- backup original view dimen
     self.orig_view_dimen = Geom:new{w = self.view.dimen.w, h = self.view.dimen.h}
     -- backup original view bgcolor
     self.orig_view_bgcolor = self.view.outer_page_color
-    self.view.outer_page_color = Blitbuffer.gray(0.5) -- gray bgcolor
+    self.view.outer_page_color = Blitbuffer.COLOR_DARK_GRAY
     -- backup original page scroll
     self.orig_page_scroll = self.view.page_scroll
     self.view.page_scroll = false
@@ -168,12 +170,18 @@ end
 function ReaderCropping:setCropZoomMode(confirmed)
     if confirmed then
         -- if original zoom mode is not "content", set zoom mode to "contentwidth"
-        self.ui:handleEvent(Event:new("SetZoomMode",
-            self.orig_zoom_mode:find("content") and self.orig_zoom_mode or "contentwidth"))
+        self:setZoomMode(
+            self.orig_zoom_mode:find("content")
+            and self.orig_zoom_mode
+            or "contentwidth")
         self.ui:handleEvent(Event:new("InitScrollPageStates"))
     else
-        self.ui:handleEvent(Event:new("SetZoomMode", self.orig_zoom_mode))
+        self:setZoomMode(self.orig_zoom_mode)
     end
+end
+
+function ReaderCropping:setZoomMode(mode)
+    self.ui:handleEvent(Event:new("SetZoomMode", mode))
 end
 
 function ReaderCropping:onReadSettings(config)

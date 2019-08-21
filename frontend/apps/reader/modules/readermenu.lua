@@ -1,21 +1,29 @@
-local InputContainer = require("ui/widget/container/inputcontainer")
 local CenterContainer = require("ui/widget/container/centercontainer")
-local GestureRange = require("ui/gesturerange")
-local UIManager = require("ui/uimanager")
+local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
-local Geom = require("ui/geometry")
 local Event = require("ui/event")
-local Screen = require("device").screen
-local DEBUG = require("dbg")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local Screensaver = require("ui/screensaver")
+local UIManager = require("ui/uimanager")
+local logger = require("logger")
+local dbg = require("dbg")
+local util  = require("util")
+local Screen = Device.screen
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 local ReaderMenu = InputContainer:new{
     tab_item_table = nil,
+    menu_items = {},
     registered_widgets = {},
 }
 
 function ReaderMenu:init()
-    self.tab_item_table = {
+    self.menu_items = {
+        ["KOMenu:menu_buttons"] = {
+            -- top menu
+        },
+        -- items in top menu
         navi = {
             icon = "resources/icons/appbar.page.corner.bookmark.png",
         },
@@ -25,11 +33,11 @@ function ReaderMenu:init()
         setting = {
             icon = "resources/icons/appbar.settings.png",
         },
-        info = {
-            icon = "resources/icons/appbar.pokeball.png",
-        },
-        plugins = {
+        tools = {
             icon = "resources/icons/appbar.tools.png",
+        },
+        search = {
+            icon = "resources/icons/appbar.magnify.browse.png",
         },
         filemanager = {
             icon = "resources/icons/appbar.cabinet.files.png",
@@ -37,117 +45,257 @@ function ReaderMenu:init()
             callback = function()
                 self:onTapCloseMenu()
                 self.ui:onClose()
-                local FileManager = require("apps/filemanager/filemanager")
-                if FileManager.instance then
-                    FileManager.instance:resetDimen(Screen:getSize())
-                else
-                    local lastdir = nil
-                    local last_file = G_reader_settings:readSetting("lastfile")
-                    if last_file then
-                        lastdir = last_file:match("(.*)/")
-                    end
-                    FileManager:showFiles(lastdir)
-                end
+                self.ui:showFileManager()
             end,
         },
-        home = {
-            icon = "resources/icons/appbar.home.png",
-            remember = false,
-            callback = function()
-                self:onTapCloseMenu()
-                UIManager:scheduleIn(0.1, function() self.ui:onClose() end)
-                local FileManager = require("apps/filemanager/filemanager")
-                if FileManager.instance then
-                    FileManager.instance:onClose()
-                end
-            end,
-        },
+        main = {
+            icon = "resources/icons/menu-icon.png",
+        }
     }
+
     self.registered_widgets = {}
 
     if Device:hasKeys() then
-        self.key_events = {
-            ShowReaderMenu = { { "Menu" }, doc = "show menu" },
-            Close = { { "Back" }, doc = "close menu" },
-        }
+        if Device:isTouchDevice() then
+            self.key_events.TapShowMenu = { { "Menu" }, doc = "show menu", }
+        else
+            -- map menu key to only top menu because bottom menu is only
+            -- designed for touch devices
+            self.key_events.ShowReaderMenu = { { "Menu" }, doc = "show menu", }
+        end
+    end
+    self.activation_menu = G_reader_settings:readSetting("activate_menu")
+    if self.activation_menu == nil then
+        self.activation_menu = "swipe_tap"
     end
 end
 
-function ReaderMenu:initGesListener()
-    self.ges_events = {
-        TapShowMenu = {
-            GestureRange:new{
-                ges = "tap",
-                range = Geom:new{
-                    x = Screen:getWidth()*DTAP_ZONE_MENU.x,
-                    y = Screen:getHeight()*DTAP_ZONE_MENU.y,
-                    w = Screen:getWidth()*DTAP_ZONE_MENU.w,
-                    h = Screen:getHeight()*DTAP_ZONE_MENU.h
-                }
-            }
+function ReaderMenu:getPreviousFile()
+    local previous_file = nil
+    local readhistory = require("readhistory")
+    for i=2, #readhistory.hist do -- skip first one which is current book
+        -- skip deleted items kept in history
+        if lfs.attributes(readhistory.hist[i].file, "mode") == "file" then
+            previous_file = readhistory.hist[i].file
+            break
+        end
+    end
+    return previous_file
+end
+
+function ReaderMenu:onReaderReady()
+    -- deligate gesture listener to readerui
+    self.ges_events = {}
+    self.onGesture = nil
+    if not Device:isTouchDevice() then return end
+
+    self.ui:registerTouchZones({
+        {
+            id = "readermenu_tap",
+            ges = "tap",
+            screen_zone = {
+                ratio_x = DTAP_ZONE_MENU.x, ratio_y = DTAP_ZONE_MENU.y,
+                ratio_w = DTAP_ZONE_MENU.w, ratio_h = DTAP_ZONE_MENU.h,
+            },
+            overrides = {
+                "tap_forward",
+                "tap_backward",
+            },
+            handler = function(ges) return self:onTapShowMenu(ges) end,
         },
-    }
+        {
+            id = "readermenu_swipe",
+            ges = "swipe",
+            screen_zone = {
+                ratio_x = DTAP_ZONE_MENU.x, ratio_y = DTAP_ZONE_MENU.y,
+                ratio_w = DTAP_ZONE_MENU.w, ratio_h = DTAP_ZONE_MENU.h,
+            },
+            overrides = {
+                "rolling_swipe",
+                "paging_swipe",
+            },
+            handler = function(ges) return self:onSwipeShowMenu(ges) end,
+        },
+        {
+            id = "readermenu_pan",
+            ges = "pan",
+            screen_zone = {
+                ratio_x = DTAP_ZONE_MENU.x, ratio_y = DTAP_ZONE_MENU.y,
+                ratio_w = DTAP_ZONE_MENU.w, ratio_h = DTAP_ZONE_MENU.h,
+            },
+            overrides = {
+                "rolling_pan",
+                "paging_pan",
+            },
+            handler = function(ges) return self:onSwipeShowMenu(ges) end,
+        },
+    })
 end
 
 function ReaderMenu:setUpdateItemTable()
     for _, widget in pairs(self.registered_widgets) do
-        widget:addToMainMenu(self.tab_item_table)
+        local ok, err = pcall(widget.addToMainMenu, widget, self.menu_items)
+        if not ok then
+            logger.err("failed to register widget", widget.name, err)
+        end
     end
 
     -- settings tab
     -- insert common settings
-    for i, common_setting in ipairs(require("ui/elements/common_settings_menu_table")) do
-        table.insert(self.tab_item_table.setting, common_setting)
+    for id, common_setting in pairs(dofile("frontend/ui/elements/common_settings_menu_table.lua")) do
+        self.menu_items[id] = common_setting
     end
     -- insert DjVu render mode submenu just before the last entry (show advanced)
     -- this is a bit of a hack
     if self.ui.document.is_djvu then
-        table.insert(
-            self.tab_item_table.setting,
-            #self.tab_item_table.setting,
-            self.view:getRenderModeMenuTable())
+        self.menu_items.djvu_render_mode = self.view:getRenderModeMenuTable()
     end
 
-    -- info tab
-    -- insert common info
-    for i, common_setting in ipairs(require("ui/elements/common_info_menu_table")) do
-        table.insert(self.tab_item_table.info, common_setting)
-    end
+    if Device:supportsScreensaver() then
+        local ss_book_settings = {
+            text = _("Exclude this book's cover from screensaver"),
+            enabled_func = function()
+                return not (self.ui == nil or self.ui.document == nil)
+                    and G_reader_settings:readSetting('screensaver_type') == "cover"
+            end,
+            checked_func = function()
+                return self.ui and self.ui.doc_settings and self.ui.doc_settings:readSetting("exclude_screensaver") == true
+            end,
+            callback = function()
+                if Screensaver:excluded() then
+                    self.ui.doc_settings:saveSetting("exclude_screensaver", false)
+                else
+                    self.ui.doc_settings:saveSetting("exclude_screensaver", true)
+                end
+                self.ui:saveSettings()
+            end
+        }
 
-    if Device:isKobo() and KOBO_SCREEN_SAVER_LAST_BOOK then
-        local excluded = function()
-            return self.ui.doc_settings:readSetting("exclude_screensaver") or false
-        end
-        local proportional = function()
-            return self.ui.doc_settings:readSetting("proportional_screensaver") or false
-        end
-        table.insert(self.tab_item_table.typeset, {
+        self.menu_items.screensaver = {
             text = _("Screensaver"),
-            sub_item_table = {
-                {
-                    text = _("Use this book's cover as screensaver"),
-                    checked_func = function() return not excluded() end,
-                    callback = function()
-                        self.ui.doc_settings:saveSetting("exclude_screensaver", not excluded())
-                        self.ui:saveSettings()
-                    end
-                },
-                {
-                    text = _("Display proportional cover image in screensaver"),
-                    checked_func = function() return proportional() end,
-                    callback = function()
-                        self.ui.doc_settings:saveSetting("proportional_screensaver", not proportional())
-                        self.ui:saveSettings()
-                    end
-                }
+            sub_item_table = require("ui/elements/screensaver_menu"),
+        }
+        table.remove(self.menu_items.screensaver.sub_item_table, 9)
+        table.insert(self.menu_items.screensaver.sub_item_table, ss_book_settings)
+    end
+
+    local PluginLoader = require("pluginloader")
+    self.menu_items.plugin_management = {
+        text = _("Plugin management"),
+        sub_item_table = PluginLoader:genPluginManagerSubItem()
+    }
+    -- main menu tab
+    -- insert common info
+    for id, common_setting in pairs(dofile("frontend/ui/elements/common_info_menu_table.lua")) do
+        self.menu_items[id] = common_setting
+    end
+
+    self.menu_items.exit_menu = {
+        text = _("Exit"),
+        hold_callback = function()
+            self:exitOrRestart()
+        end,
+    }
+    self.menu_items.exit = {
+        text = _("Exit"),
+        callback = function()
+            self:exitOrRestart()
+        end,
+    }
+    self.menu_items.restart_koreader = {
+        text = _("Restart KOReader"),
+        callback = function()
+            self:exitOrRestart(function() UIManager:restartKOReader() end)
+        end,
+    }
+    if not Device:canRestart() then
+        self.menu_items.exit_menu = self.menu_items.exit
+        self.menu_items.exit = nil
+        self.menu_items.restart_koreader = nil
+    end
+
+    self.menu_items.open_previous_document = {
+        text_func = function()
+            local previous_file = self:getPreviousFile()
+            if not G_reader_settings:isTrue("open_last_menu_show_filename") or not previous_file then
+                return _("Open previous document")
+            end
+            local path, file_name = util.splitFilePathName(previous_file) -- luacheck: no unused
+            return T(_("Previous: %1"), file_name)
+        end,
+        enabled_func = function()
+            return self:getPreviousFile() ~= nil
+        end,
+        callback = function()
+            self.ui:switchDocument(self:getPreviousFile())
+        end,
+        hold_callback = function()
+            local previous_file = self:getPreviousFile()
+            UIManager:show(ConfirmBox:new{
+                text = T(_("Would you like to open the previous document: %1?"), previous_file),
+                ok_text = _("OK"),
+                ok_callback = function()
+                    self.ui:switchDocument(previous_file)
+                end,
+            })
+        end
+    }
+
+    local order = require("ui/elements/reader_menu_order")
+
+    local MenuSorter = require("ui/menusorter")
+    self.tab_item_table = MenuSorter:mergeAndSort("reader", self.menu_items, order)
+end
+dbg:guard(ReaderMenu, 'setUpdateItemTable',
+    function(self)
+        local mock_menu_items = {}
+        for _, widget in pairs(self.registered_widgets) do
+            -- make sure addToMainMenu works in debug mode
+            widget:addToMainMenu(mock_menu_items)
+        end
+    end)
+
+function ReaderMenu:exitOrRestart(callback)
+    if self.menu_container then self:onTapCloseMenu() end
+    UIManager:nextTick(function()
+        self.ui:onClose()
+        if callback ~= nil then
+            -- show an empty widget so that the callback always happens
+            local Widget = require("ui/widget/widget")
+            local widget = Widget:new{
+                width = Screen:getWidth(),
+                height = Screen:getHeight(),
             }
-        })
+            UIManager:show(widget)
+            local waiting = function(waiting)
+                -- if we don't do this you can get a situation where either the
+                -- program won't exit due to remaining widgets until they're
+                -- dismissed or if the callback forces all widgets to close,
+                -- that the save document ConfirmBox is also closed
+                if self.ui and self.ui.document and self.ui.document:isEdited() then
+                    logger.dbg("waiting for save settings")
+                    UIManager:scheduleIn(1, function() waiting(waiting) end)
+                else
+                    callback()
+                    UIManager:close(widget)
+                end
+            end
+            UIManager:scheduleIn(1, function() waiting(waiting) end)
+        end
+    end)
+    local FileManager = require("apps/filemanager/filemanager")
+    if FileManager.instance then
+        FileManager.instance:onClose()
     end
 end
 
-function ReaderMenu:onShowReaderMenu()
-    if #self.tab_item_table.setting == 0 then
+function ReaderMenu:onShowReaderMenu(tab_index)
+    if self.tab_item_table == nil then
         self:setUpdateItemTable()
+    end
+
+    if not tab_index then
+        tab_index = self.last_tab_index
     end
 
     local menu_container = CenterContainer:new{
@@ -156,20 +304,12 @@ function ReaderMenu:onShowReaderMenu()
     }
 
     local main_menu
-    if Device:isTouchDevice() then
+    if Device:isTouchDevice() or Device:hasDPad() then
         local TouchMenu = require("ui/widget/touchmenu")
         main_menu = TouchMenu:new{
             width = Screen:getWidth(),
-            last_index = self.last_tab_index,
-            tab_item_table = {
-                self.tab_item_table.navi,
-                self.tab_item_table.typeset,
-                self.tab_item_table.setting,
-                self.tab_item_table.info,
-                self.tab_item_table.plugins,
-                self.tab_item_table.filemanager,
-                self.tab_item_table.home,
-            },
+            last_index = tab_index,
+            tab_item_table = self.tab_item_table,
             show_parent = menu_container,
         }
     else
@@ -194,34 +334,68 @@ function ReaderMenu:onShowReaderMenu()
     -- maintain a reference to menu_container
     self.menu_container = menu_container
     UIManager:show(menu_container)
-
     return true
 end
 
 function ReaderMenu:onCloseReaderMenu()
-    self.last_tab_index = self.menu_container[1].last_index
-    DEBUG("remember menu tab index", self.last_tab_index)
-    self:onSaveSettings()
-    UIManager:close(self.menu_container)
+    if self.menu_container then
+        self.last_tab_index = self.menu_container[1].last_index
+        self:onSaveSettings()
+        UIManager:close(self.menu_container)
+    end
     return true
 end
 
-function ReaderMenu:onTapShowMenu()
-    self.ui:handleEvent(Event:new("ShowConfigMenu"))
-    self.ui:handleEvent(Event:new("ShowReaderMenu"))
-    return true
+function ReaderMenu:onCloseDocument()
+    if Device:supportsScreensaver() then
+        -- Remove the 9th item we added (which cleans up references to document
+        -- and doc_settings embedded in functions)
+        local screensaver_sub_item_table = require("ui/elements/screensaver_menu")
+        table.remove(screensaver_sub_item_table, 9)
+    end
+end
+
+function ReaderMenu:_getTabIndexFromLocation(ges)
+    if self.tab_item_table == nil then
+        self:setUpdateItemTable()
+    end
+    if not ges then
+        return self.last_tab_index
+    -- if the start position is far right
+    elseif ges.pos.x > 2 * Screen:getWidth() / 3 then
+        return #self.tab_item_table
+    -- if the start position is far left
+    elseif ges.pos.x < Screen:getWidth() / 3 then
+        return 1
+    -- if center return the last index
+    else
+        return self.last_tab_index
+    end
+end
+
+function ReaderMenu:onSwipeShowMenu(ges)
+    if self.activation_menu ~= "tap" and ges.direction == "south" then
+        if G_reader_settings:nilOrTrue("show_bottom_menu") then
+            self.ui:handleEvent(Event:new("ShowConfigMenu"))
+        end
+        self.ui:handleEvent(Event:new("ShowReaderMenu", self:_getTabIndexFromLocation(ges)))
+        return true
+    end
+end
+
+function ReaderMenu:onTapShowMenu(ges)
+    if self.activation_menu ~= "swipe" then
+        if G_reader_settings:nilOrTrue("show_bottom_menu") then
+            self.ui:handleEvent(Event:new("ShowConfigMenu"))
+        end
+        self.ui:handleEvent(Event:new("ShowReaderMenu", self:_getTabIndexFromLocation(ges)))
+        return true
+    end
 end
 
 function ReaderMenu:onTapCloseMenu()
     self.ui:handleEvent(Event:new("CloseReaderMenu"))
     self.ui:handleEvent(Event:new("CloseConfigMenu"))
-end
-
-function ReaderMenu:onSetDimensions(dimen)
-    -- update listening according to new screen dimen
-    if Device:isTouchDevice() then
-        self:initGesListener()
-    end
 end
 
 function ReaderMenu:onReadSettings(config)

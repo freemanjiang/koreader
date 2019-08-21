@@ -1,16 +1,15 @@
 local CenterContainer = require("ui/widget/container/centercontainer")
-local InputContainer = require("ui/widget/container/inputcontainer")
 local DocumentRegistry = require("document/documentregistry")
-local InputDialog = require("ui/widget/inputdialog")
-local InfoMessage = require("ui/widget/infomessage")
-local lfs = require("libs/libkoreader-lfs")
-local UIManager = require("ui/uimanager")
-local Menu = require("ui/widget/menu")
-local Screen = require("device").screen
-local util = require("ffi/util")
 local Font = require("ui/font")
-local DEBUG = require("dbg")
+local InfoMessage = require("ui/widget/infomessage")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local InputDialog = require("ui/widget/inputdialog")
+local Menu = require("ui/widget/menu")
+local UIManager = require("ui/uimanager")
+local lfs = require("libs/libkoreader-lfs")
+local util = require("ffi/util")
 local _ = require("gettext")
+local Screen = require("device").screen
 
 local FileSearcher = InputContainer:new{
     search_dialog = nil,
@@ -30,7 +29,6 @@ local FileSearcher = InputContainer:new{
 
 function FileSearcher:readDir()
     self.dirs = {self.path}
-    DEBUG("self.path", self.path)
     self.files = {}
     while #self.dirs ~= 0 do
         local new_dirs = {}
@@ -42,7 +40,8 @@ function FileSearcher:readDir()
                 local attributes = lfs.attributes(fullpath)
                 if attributes.mode == "directory" and f ~= "." and f~=".." then
                     table.insert(new_dirs, fullpath)
-                elseif attributes.mode == "file" and DocumentRegistry:getProvider(fullpath) then
+                    table.insert(self.files, {name = f, path = fullpath, attr = attributes})
+                elseif attributes.mode == "file" and DocumentRegistry:hasProvider(fullpath) then
                     table.insert(self.files, {name = f, path = fullpath, attr = attributes})
                 end
             end
@@ -52,38 +51,39 @@ function FileSearcher:readDir()
 end
 
 function FileSearcher:setSearchResults()
+    local FileManager = require("apps/filemanager/filemanager")
     local ReaderUI = require("apps/reader/readerui")
     local keywords = self.search_value
-    --DEBUG("self.files", self.files)
     self.results = {}
     if keywords == " " then -- one space to show all files
         self.results = self.files
     else
         for __,f in pairs(self.files) do
-        DEBUG("f", f)
-            if string.find(string.lower(f.name), string.lower(keywords)) then
-                f.text = f.name
-                f.name = nil
-                f.callback = function()
-                    ReaderUI:showReader(f.path)
+            if string.find(string.lower(f.name), string.lower(keywords)) and string.sub(f.name,-4) ~= ".sdr" then
+                if f.attr.mode == "directory" then
+                    f.text = f.name.."/"
+                    f.name = nil
+                    f.callback = function()
+                        FileManager:showFiles(f.path)
+                    end
+                    table.insert(self.results, f)
+                else
+                    f.text = f.name
+                    f.name = nil
+                    f.callback = function()
+                        ReaderUI:showReader(f.path)
+                    end
+                    table.insert(self.results, f)
                 end
-                table.insert(self.results, f)
             end
         end
     end
-    --DEBUG("self.results", self.results)
     self.keywords = keywords
     self.items = #self.results
 end
 
-function FileSearcher:init(search_path)
-    self.path = search_path or lfs.currentdir()
-    self:showSearch()
-end
-
 function FileSearcher:close()
     if self.search_value then
-        self.search_dialog:onClose()
         UIManager:close(self.search_dialog)
         if string.len(self.search_value) > 0 then
             self:readDir() -- TODO this probably doesn't need to be repeated once it's been done
@@ -93,7 +93,8 @@ function FileSearcher:close()
             else
                 UIManager:show(
                     InfoMessage:new{
-                        text = util.template(_("Found no files matching '%1'."), self.search_value)
+                        text = util.template(_("Found no files matching '%1'."),
+                                             self.search_value)
                     }
                 )
             end
@@ -101,11 +102,16 @@ function FileSearcher:close()
     end
 end
 
-function FileSearcher:showSearch()
+function FileSearcher:onShowFileSearch(search_path)
     local dummy = self.search_value
+    local enabled_search_home_dir = true
+    if not G_reader_settings:readSetting("home_dir") then
+        enabled_search_home_dir = false
+    end
     self.search_dialog = InputDialog:new{
         title = _("Search for books by filename"),
         input = self.search_value,
+        width = Screen:getWidth() * 0.9,
         buttons = {
             {
                 {
@@ -117,9 +123,24 @@ function FileSearcher:showSearch()
                     end,
                 },
                 {
-                    text = _("Find books"),
+                    text = _("Current folder"),
                     enabled = true,
                     callback = function()
+                        self.path = search_path or lfs.currentdir()
+                        self.search_value = self.search_dialog:getInputText()
+                        if self.search_value == dummy then -- probably DELETE this if/else block
+                            self.use_previous_search_results = true
+                        else
+                            self.use_previous_search_results = false
+                        end
+                        self:close()
+                    end,
+                },
+                {
+                    text = _("Home folder"),
+                    enabled = enabled_search_home_dir,
+                    callback = function()
+                        self.path = G_reader_settings:readSetting("home_dir")
                         self.search_value = self.search_dialog:getInputText()
                         if self.search_value == dummy then -- probably DELETE this if/else block
                             self.use_previous_search_results = true
@@ -131,11 +152,9 @@ function FileSearcher:showSearch()
                 },
             },
         },
-        width = Screen:getWidth() * 0.8,
-        height = Screen:getHeight() * 0.2,
     }
-    self.search_dialog:onShowKeyboard()
     UIManager:show(self.search_dialog)
+    self.search_dialog:onShowKeyboard()
 end
 
 function FileSearcher:showSearchResults()
@@ -147,7 +166,8 @@ function FileSearcher:showSearchResults()
         height = Screen:getHeight()-15,
         show_parent = menu_container,
         onMenuHold = self.onMenuHold,
-        cface = Font:getFace("cfont", 22),
+        cface = Font:getFace("smallinfofont"),
+        perpage = G_reader_settings:readSetting("items_per_page") or 14,
         _manager = self,
     }
     table.insert(menu_container, self.search_menu)
@@ -155,7 +175,7 @@ function FileSearcher:showSearchResults()
         UIManager:close(menu_container)
     end
     table.sort(self.results, function(v1,v2) return v1.text < v2.text end)
-    self.search_menu:swithItemTable(_("Search Results"), self.results)
+    self.search_menu:switchItemTable(_("Search Results"), self.results)
     UIManager:show(menu_container)
 end
 

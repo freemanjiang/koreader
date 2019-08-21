@@ -13,7 +13,7 @@ DHINTCOUNT = 1
 DFULL_SCREEN = 1
 
 -- scroll mode, 1 for true, 0 for false
-DSCROLL_MODE = 0
+DSCROLL_MODE = 1
 
 -- default gamma setting:
 DGLOBALGAMMA = 1.0
@@ -64,17 +64,21 @@ DOVERLAPPIXELS = 30
 FOLLOW_LINK_TIMEOUT = 0.5
 
 -- customizable tap zones(rectangles)
--- x: x coordinate of top left corner in proportion of screen width
--- y: y coordinate of top left corner in proportion of screen height
--- w: width of tap zone in proportion of screen width
--- h: height of tap zone in proportion of screen height
-DTAP_ZONE_MENU = {x = 1/8, y = 0, w = 3/4, h = 1/4}
-DTAP_ZONE_CONFIG = {x = 0, y = 0, w = 0, h = 0}
-DTAP_ZONE_MINIBAR = {x = 0, y = 15/16, w = 1, h = 1/16}
+-- x: x coordinate of top left corner in proportion to screen width
+-- y: y coordinate of top left corner in proportion to screen height
+-- w: tap zone width in proportion to screen width
+-- h: tap zone height in proportion to screen height
+DTAP_ZONE_MENU = {x = 1/8, y = 0, w = 3/4, h = 1/8}
+DTAP_ZONE_CONFIG = {x = 1/8, y = 7/8, w = 3/4, h = 1/8}
+DTAP_ZONE_MINIBAR = {x = 0, y = 31/32, w = 1, h = 1/32}
 DTAP_ZONE_FORWARD = {x = 1/4, y = 0, w = 3/4, h = 1}
 DTAP_ZONE_BACKWARD = {x = 0, y = 0, w = 1/4, h = 1}
-DTAP_ZONE_BOOKMARK = {x = 7/8, y = 0, w = 1/8, h = 1/8}
-DTAP_ZONE_FLIPPING = {x = 0, y = 0, w = 1/8, h = 1/8}
+-- DTAP_ZONE_BOOKMARK = {x = 7/8, y = 0, w = 1/8, h = 1/8} -- deprecated
+-- DTAP_ZONE_FLIPPING = {x = 0, y = 0, w = 1/8, h = 1/8} -- deprecated
+DTAP_ZONE_TOP_LEFT = {x = 0, y = 0, w = 1/8, h = 1/8}
+DTAP_ZONE_TOP_RIGHT = {x = 7/8, y = 0, w = 1/8, h = 1/8}
+DTAP_ZONE_BOTTOM_LEFT = {x = 0, y = 7/8, w = 1/8, h = 1/8}
+DTAP_ZONE_BOTTOM_RIGHT = {x = 7/8, y = 7/8, w = 1/8, h = 1/8}
 DDOUBLE_TAP_ZONE_NEXT_CHAPTER = {x = 6/8, y = 0, w = 2/8, h = 2/8}
 DDOUBLE_TAP_ZONE_PREV_CHAPTER = {x = 0, y = 0, w = 2/8, h = 2/8}
 
@@ -110,20 +114,63 @@ DCREREADER_CONFIG_FONT_SIZES = {12, 16, 20, 22, 24, 26, 28, 30, 34, 38, 44}  -- 
 DCREREADER_CONFIG_DEFAULT_FONT_SIZE = 22    -- default font size
 
 -- crereader margin sizes
--- margin {left, top, right, bottom} in pixels
-DCREREADER_CONFIG_MARGIN_SIZES_SMALL = {5, 10, 5, 10}
-DCREREADER_CONFIG_MARGIN_SIZES_MEDIUM = {10, 15, 10, 15}
-DCREREADER_CONFIG_MARGIN_SIZES_LARGE = {20, 20, 20, 20}
+-- horizontal margins {left, right} in (relative) pixels
+DCREREADER_CONFIG_H_MARGIN_SIZES_SMALL = {5, 5}
+DCREREADER_CONFIG_H_MARGIN_SIZES_MEDIUM = {10, 10}
+DCREREADER_CONFIG_H_MARGIN_SIZES_LARGE = {15, 15}
+DCREREADER_CONFIG_H_MARGIN_SIZES_X_LARGE = {20, 20}
+DCREREADER_CONFIG_H_MARGIN_SIZES_XX_LARGE = {30, 30}
+DCREREADER_CONFIG_H_MARGIN_SIZES_XXX_LARGE = {50, 50}
+DCREREADER_CONFIG_H_MARGIN_SIZES_HUGE = {70, 70}
+DCREREADER_CONFIG_H_MARGIN_SIZES_X_HUGE = {100, 100}
+DCREREADER_CONFIG_H_MARGIN_SIZES_XX_HUGE = {140, 140}
 
--- crereader font gamma
-DCREREADER_CONFIG_LIGHTER_FONT_GAMMA = 10
-DCREREADER_CONFIG_DEFAULT_FONT_GAMMA = 15
-DCREREADER_CONFIG_DARKER_FONT_GAMMA = 25
+-- top margin in (relative) pixels
+DCREREADER_CONFIG_T_MARGIN_SIZES_SMALL = 5
+DCREREADER_CONFIG_T_MARGIN_SIZES_MEDIUM = 10
+DCREREADER_CONFIG_T_MARGIN_SIZES_LARGE = 15
+DCREREADER_CONFIG_T_MARGIN_SIZES_X_LARGE = 20
+DCREREADER_CONFIG_T_MARGIN_SIZES_XX_LARGE = 30
+DCREREADER_CONFIG_T_MARGIN_SIZES_XXX_LARGE = 50
+DCREREADER_CONFIG_T_MARGIN_SIZES_HUGE = 70
+DCREREADER_CONFIG_T_MARGIN_SIZES_X_HUGE = 100
+DCREREADER_CONFIG_T_MARGIN_SIZES_XX_HUGE = 140
+
+-- bottom margin in (relative) pixels
+DCREREADER_CONFIG_B_MARGIN_SIZES_SMALL = 5
+DCREREADER_CONFIG_B_MARGIN_SIZES_MEDIUM = 10
+DCREREADER_CONFIG_B_MARGIN_SIZES_LARGE = 15
+DCREREADER_CONFIG_B_MARGIN_SIZES_X_LARGE = 20
+DCREREADER_CONFIG_B_MARGIN_SIZES_XX_LARGE = 30
+DCREREADER_CONFIG_B_MARGIN_SIZES_XXX_LARGE = 50
+DCREREADER_CONFIG_B_MARGIN_SIZES_HUGE = 70
+DCREREADER_CONFIG_B_MARGIN_SIZES_X_HUGE = 100
+DCREREADER_CONFIG_B_MARGIN_SIZES_XX_HUGE = 140
+
+-- crereader font gamma (no longer used)
+-- DCREREADER_CONFIG_LIGHTER_FONT_GAMMA = 10
+-- DCREREADER_CONFIG_DEFAULT_FONT_GAMMA = 15
+-- DCREREADER_CONFIG_DARKER_FONT_GAMMA = 25
 
 -- crereader line space percentage
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_X_TINY = 70
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_TINY = 75
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_XX_SMALL = 80
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_X_SMALL = 85
 DCREREADER_CONFIG_LINE_SPACE_PERCENT_SMALL = 90
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_L_SMALL = 95
 DCREREADER_CONFIG_LINE_SPACE_PERCENT_MEDIUM = 100
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_L_MEDIUM = 105
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_XL_MEDIUM = 110
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_XXL_MEDIUM = 115
 DCREREADER_CONFIG_LINE_SPACE_PERCENT_LARGE = 120
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_X_LARGE = 125
+DCREREADER_CONFIG_LINE_SPACE_PERCENT_XX_LARGE = 130
+
+-- word gap percentage
+DCREREADER_CONFIG_WORD_GAP_SMALL = 50
+DCREREADER_CONFIG_WORD_GAP_MEDIUM = 75
+DCREREADER_CONFIG_WORD_GAP_LARGE = 100
 
 -- crereader progress bar
 -- 0 for top "full" progress bar
@@ -136,10 +183,7 @@ DMINIBAR_HEIGHT = 7             -- Should be smaller than DMINIBAR_CONTAINER_HEI
 DMINIBAR_CONTAINER_HEIGHT = 14  -- Larger means more padding at the bottom, at the risk of eating into the last line
 DMINIBAR_FONT_SIZE = 14
 
--- gesture detector defaults
-DGESDETECT_DISABLE_DOUBLE_TAP = true
-
--- change this to any numerical value if you want to antomatically save settings when turning pages
+-- change this to any numerical value if you want to automatically save settings when turning pages
 DAUTO_SAVE_PAGING_COUNT = nil
 
 -- dictionary font size
@@ -149,7 +193,7 @@ DDICT_FONT_SIZE = 20
 -- e.g. 2 changes the sensitivity by 1/2, 3 by 1/3 etc.
 FRONTLIGHT_SENSITIVITY_DECREASE = 2
 
--- Normally, Koreader will present file lists sorted in case insensitive manner
+-- Normally, KOReader will present file lists sorted in case insensitive manner
 -- when presenting an alphatically sorted list. So the Order is "A, b, C, d".
 -- You can switch to a case sensitive sort ("A", "C", "b", "d") by disabling
 -- insensitive sort
@@ -173,13 +217,12 @@ SEARCH_SERIES = true
 SEARCH_PATH = true
 
 -- Light parameter for Kobo
-KOBO_LIGHT_ON_START = -2           -- -1, -2 or 0-100. -1 leaves light as it
-                                   -- is, -2 uses 'Kobo eReader.conf', other
-                                   -- sets light on start/wake up
+KOBO_LIGHT_ON_START = -2           -- -1, -2 or 0-100.
+                                   -- -1 uses previous koreader session saved brightness
+                                   -- -2 uses 'Kobo eReader.conf' brighness,
+                                   -- other sets light on start to a fix brighness
 KOBO_SYNC_BRIGHTNESS_WITH_NICKEL = true  -- Save brightness set in KOreader
                                          -- with nickel's 'Kobo eReader.conf'
-KOBO_SCREEN_SAVER = ""             -- image or directory with pictures or "-"
-KOBO_SCREEN_SAVER_LAST_BOOK = true -- get screensaver from last book if possible
 
 -- Network proxy settings
 -- proxy url should be a string in the format of "http://localhost:3128"

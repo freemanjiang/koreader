@@ -2,11 +2,21 @@
 Text rendering module.
 ]]
 
+local bit = require("bit")
 local Font = require("ui/font")
 local Cache = require("cache")
 local CacheItem = require("cacheitem")
 local BlitBuffer = require("ffi/blitbuffer")
-local DEBUG = require("dbg")
+local Device = require("device")
+local logger = require("logger")
+
+local band = bit.band
+local bor = bit.bor
+local lshift = bit.lshift
+
+if Device.should_restrict_JIT then
+    require("jit").off(true, true)
+end
 
 --[[
 @TODO: all these functions should probably be methods on Face objects
@@ -26,23 +36,23 @@ local function utf8Chars(input_text)
     local function read_next_glyph(input, pos)
         if string.len(input) < pos then return nil end
         local value = string.byte(input, pos)
-        if bit.band(value, 0x80) == 0 then
+        if band(value, 0x80) == 0 then
             -- TODO: check valid ranges
             return pos+1, value, string.sub(input, pos, pos)
-        elseif bit.band(value, 0xC0) == 0x80 -- invalid, continuation
-        or bit.band(value, 0xF8) == 0xF8 -- 5-or-more byte sequence, illegal due to RFC3629
+        elseif band(value, 0xC0) == 0x80 -- invalid, continuation
+        or band(value, 0xF8) == 0xF8 -- 5-or-more byte sequence, illegal due to RFC3629
         then
             return pos+1, 0xFFFD, "\xFF\xFD"
         else
             local glyph, bytes_left
-            if bit.band(value, 0xE0) == 0xC0 then
-                glyph = bit.band(value, 0x1F)
+            if band(value, 0xE0) == 0xC0 then
+                glyph = band(value, 0x1F)
                 bytes_left = 1
-            elseif bit.band(value, 0xF0) == 0xE0 then
-                glyph = bit.band(value, 0x0F)
+            elseif band(value, 0xF0) == 0xE0 then
+                glyph = band(value, 0x0F)
                 bytes_left = 2
-            elseif bit.band(value, 0xF8) == 0xF0 then
-                glyph = bit.band(value, 0x07)
+            elseif band(value, 0xF8) == 0xF0 then
+                glyph = band(value, 0x07)
                 bytes_left = 3
             else
                 return pos+1, 0xFFFD, "\xFF\xFD"
@@ -52,8 +62,8 @@ local function utf8Chars(input_text)
             end
             for i = pos+1, pos + bytes_left do
                 value = string.byte(input, i)
-                if bit.band(value, 0xC0) == 0x80 then
-                    glyph = bit.bor(bit.lshift(glyph, 6), bit.band(value, 0x3F))
+                if band(value, 0xC0) == 0x80 then
+                    glyph = bor(lshift(glyph, 6), band(value, 0x3F))
                 else
                     -- invalid UTF8 continuation - don't be greedy, just skip
                     -- the initial char of the sequence.
@@ -67,6 +77,12 @@ local function utf8Chars(input_text)
     return read_next_glyph, input_text, 1
 end
 
+--- Returns a rendered glyph
+--
+-- @tparam ui.font.FontFaceObj face font face for the text
+-- @int charcode
+-- @bool[opt=false] bold whether the text should be measured as bold
+-- @treturn glyph
 function RenderText:getGlyph(face, charcode, bold)
     local hash = "glyph|"..face.hash.."|"..charcode.."|"..(bold and 1 or 0)
     local glyph = GlyphCache:check(hash)
@@ -83,14 +99,13 @@ function RenderText:getGlyph(face, charcode, bold)
             -- for some characters it cannot find in Fallbacks, it will crash here
                 if fb_face.ftface:checkGlyph(charcode) ~= 0 then
                     rendered_glyph = fb_face.ftface:renderGlyph(charcode, bold)
-                    --DEBUG("fallback to font", font)
                     break
                 end
             end
         end
     end
     if not rendered_glyph then
-        DEBUG("error rendering glyph (charcode=", charcode, ") for face", face)
+        logger.warn("error rendering glyph (charcode=", charcode, ") for face", face)
         return
     end
     glyph = CacheItem:new{rendered_glyph}
@@ -99,7 +114,7 @@ function RenderText:getGlyph(face, charcode, bold)
     return rendered_glyph
 end
 
---- Return a substring of a given text that meets the maximum width (in pixels)
+--- Returns a substring of a given text that meets the maximum width (in pixels)
 -- restriction.
 --
 -- @string text text to truncate
@@ -108,6 +123,7 @@ end
 -- @bool[opt=false] kerning whether the text should be measured with kerning
 -- @bool[opt=false] bold whether the text should be measured as bold
 -- @treturn string
+-- @see truncateTextByWidth
 function RenderText:getSubTextByWidth(text, face, width, kerning, bold)
     local pen_x = 0
     local prevcharcode
@@ -145,8 +161,8 @@ end
 -- @treturn RenderTextSize
 function RenderText:sizeUtf8Text(x, width, face, text, kerning, bold)
     if not text then
-        DEBUG("sizeUtf8Text called without text");
-        return
+        logger.warn("sizeUtf8Text called without text");
+        return { x = 0, y_top = 0, y_bottom = 0 }
     end
 
     -- may still need more adaptive pen placement when kerning,
@@ -189,10 +205,11 @@ end
 -- @bool[opt=false] bold whether the text should be measured as bold
 -- @tparam[opt=BlitBuffer.COLOR_BLACK] BlitBuffer.COLOR fgcolor foreground color
 -- @int[opt=nil] width maximum rendering width
+-- @tparam[opt] table char_pads array of integers, nb of pixels to add, one for each utf8 char in text
 -- @return int width of rendered bitmap
-function RenderText:renderUtf8Text(dest_bb, x, baseline, face, text, kerning, bold, fgcolor, width)
+function RenderText:renderUtf8Text(dest_bb, x, baseline, face, text, kerning, bold, fgcolor, width, char_pads)
     if not text then
-        DEBUG("renderUtf8Text called without text");
+        logger.warn("renderUtf8Text called without text");
         return 0
     end
 
@@ -208,6 +225,7 @@ function RenderText:renderUtf8Text(dest_bb, x, baseline, face, text, kerning, bo
     if width and width < text_width then
         text_width = width
     end
+    local char_idx = 0
     for _, charcode, uchar in utf8Chars(text) do
         if pen_x < text_width then
             local glyph = self:getGlyph(face, charcode, bold)
@@ -224,9 +242,54 @@ function RenderText:renderUtf8Text(dest_bb, x, baseline, face, text, kerning, bo
             pen_x = pen_x + glyph.ax
             prevcharcode = charcode
         end -- if pen_x < text_width
+        if char_pads then
+            char_idx = char_idx + 1
+            pen_x = pen_x + (char_pads[char_idx] or 0)
+            -- We used to use:
+            --   pen_x = pen_x + char_pads[char_idx]
+            --   above will fail if we didnt count the same number of chars, we'll see
+            -- We saw, and it's pretty robust: it never failed before we tried to
+            -- render some binary content, which messes the utf8 sequencing: the
+            -- split to UTF8 is only reversible if text is valid UTF8 (or nearly UTF8).
+            -- TextBoxWidget did this sequencing, counted the number of chars
+            -- and made out 'char_pads', and gave us back the concatenated utf8
+            -- chars as 'text', that we sequenced again above: we may not get the
+            -- same number of chars as we did previously to make char_pads.
+            -- We'd rather not crash (and have binary stuff displayed, even if
+            -- badly). The mess in char_pads is negligeable when that happens.
+        end
     end
 
     return pen_x
+end
+
+local ellipsis, space = "…", " "
+local ellipsis_width, space_width
+--- Returns a substring of a given text that meets the maximum width (in pixels)
+-- restriction with ellipses (…) at the end if required.
+--
+-- @string text text to truncate
+-- @tparam ui.font.FontFaceObj face font face for the text
+-- @int width maximum width in pixels
+-- @bool[opt=false] kerning whether the text should be measured with kerning
+-- @bool[opt=false] bold whether the text should be measured as bold
+-- @bool[opt=false] prepend_space whether a space should be prepended to the text
+-- @treturn string
+-- @see getSubTextByWidth
+function RenderText:truncateTextByWidth(text, face, max_width, kerning, bold, prepend_space)
+    if not ellipsis_width then
+        ellipsis_width = self:sizeUtf8Text(0, max_width, face, ellipsis).x
+    end
+    if not space_width then
+        space_width = self:sizeUtf8Text(0, max_width, face, space).x
+    end
+    local new_txt_width = max_width - ellipsis_width - space_width
+    local sub_txt = self:getSubTextByWidth(text, face, new_txt_width, kerning, bold)
+    if prepend_space then
+        return space.. sub_txt .. ellipsis
+    else
+        return sub_txt .. ellipsis .. space
+    end
 end
 
 return RenderText

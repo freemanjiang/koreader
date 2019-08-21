@@ -1,28 +1,46 @@
 local Cache = require("cache")
 local CacheItem = require("cacheitem")
-local KoptOptions = require("ui/data/koptoptions")
+local CanvasContext = require("document/canvascontext")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
-local DEBUG = require("dbg")
+local logger = require("logger")
 local util = require("util")
+local ffi = require("ffi")
+local C = ffi.C
+local pdf = nil
+
 
 local PdfDocument = Document:new{
     _document = false,
     is_pdf = true,
     dc_null = DrawContext.new(),
-    options = KoptOptions,
+    epub_font_size = G_reader_settings:readSetting("copt_font_size")
+            or DCREREADER_CONFIG_DEFAULT_FONT_SIZE or 22,
     koptinterface = nil,
+    provider = "mupdf",
+    provider_name = "MuPDF",
 }
 
 function PdfDocument:init()
-    local pdf = require("ffi/mupdf")
+    if not pdf then pdf = require("ffi/mupdf") end
+    -- mupdf.color has to stay false for kopt to work correctly
+    -- and be accurate (including its job about showing highlight
+    -- boxes). We will turn it on and off in PdfDocument:preRenderPage()
+    -- and :postRenderPage() when mupdf is called without kopt involved.
+    pdf.color = false
+    self:updateColorRendering()
     self.koptinterface = require("document/koptinterface")
-    self.configurable:loadDefaults(self.options)
+    self.koptinterface:setDefaultConfigurable(self.configurable)
     local ok
     ok, self._document = pcall(pdf.openDocument, self.file)
     if not ok then
         error(self._document)  -- will contain error message
     end
+    -- no-op on PDF
+    self._document:layoutDocument(
+        CanvasContext:getWidth(),
+        CanvasContext:getHeight(),
+        CanvasContext:scaleBySize(self.epub_font_size))
     self.is_open = true
     self.info.has_pages = true
     self.info.configurable = true
@@ -31,10 +49,14 @@ function PdfDocument:init()
     else
         self:_readMetadata()
     end
-    -- TODO: handle this
-    -- if not (self.info.number_of_pages > 0) then
-        --error("No page found in PDF file")
-    -- end
+end
+
+function PdfDocument:preRenderPage()
+    pdf.color = self.render_color
+end
+
+function PdfDocument:postRenderPage()
+    pdf.color = false
 end
 
 function PdfDocument:unlock(password)
@@ -77,8 +99,8 @@ function PdfDocument:getOCRText(pageno, tboxes)
     return self.koptinterface:getOCRText(self, pageno, tboxes)
 end
 
-function PdfDocument:getPageRegions(pageno)
-    return self.koptinterface:getPageRegions(self, pageno)
+function PdfDocument:getPageBlock(pageno, x, y)
+    return self.koptinterface:getPageBlock(self, pageno, x, y)
 end
 
 function PdfDocument:getUsedBBox(pageno)
@@ -120,37 +142,41 @@ function PdfDocument:getPageLinks(pageno)
 end
 
 function PdfDocument:saveHighlight(pageno, item)
+    local suffix = util.getFileNameSuffix(self.file)
+    if string.lower(suffix) ~= "pdf" then return end
+
     self.is_edited = true
-    local ffi = require("ffi")
     -- will also need mupdf_h.lua to be evaluated once
     -- but this is guaranteed at this point
     local n = #item.pboxes
-    local quadpoints = ffi.new("fz_point[?]", 4*n)
+    local quadpoints = ffi.new("float[?]", 8*n)
     for i=1, n do
-        quadpoints[4*i-4].x = item.pboxes[i].x
-        quadpoints[4*i-4].y = item.pboxes[i].y + item.pboxes[i].h
-        quadpoints[4*i-3].x = item.pboxes[i].x + item.pboxes[i].w
-        quadpoints[4*i-3].y = item.pboxes[i].y + item.pboxes[i].h
-        quadpoints[4*i-2].x = item.pboxes[i].x + item.pboxes[i].w
-        quadpoints[4*i-2].y = item.pboxes[i].y
-        quadpoints[4*i-1].x = item.pboxes[i].x
-        quadpoints[4*i-1].y = item.pboxes[i].y
+        -- The order must be left bottom, right bottom, left top, right top.
+        -- https://bugs.ghostscript.com/show_bug.cgi?id=695130
+        quadpoints[8*i-8] = item.pboxes[i].x
+        quadpoints[8*i-7] = item.pboxes[i].y + item.pboxes[i].h
+        quadpoints[8*i-6] = item.pboxes[i].x + item.pboxes[i].w
+        quadpoints[8*i-5] = item.pboxes[i].y + item.pboxes[i].h
+        quadpoints[8*i-4] = item.pboxes[i].x
+        quadpoints[8*i-3] = item.pboxes[i].y
+        quadpoints[8*i-2] = item.pboxes[i].x + item.pboxes[i].w
+        quadpoints[8*i-1] = item.pboxes[i].y
     end
     local page = self._document:openPage(pageno)
-    local annot_type = ffi.C.FZ_ANNOT_HIGHLIGHT
+    local annot_type = C.PDF_ANNOT_HIGHLIGHT
     if item.drawer == "lighten" then
-        annot_type = ffi.C.FZ_ANNOT_HIGHLIGHT
+        annot_type = C.PDF_ANNOT_HIGHLIGHT
     elseif item.drawer == "underscore" then
-        annot_type = ffi.C.FZ_ANNOT_UNDERLINE
+        annot_type = C.PDF_ANNOT_UNDERLINE
     elseif item.drawer == "strikeout" then
-        annot_type = ffi.C.FZ_ANNOT_STRIKEOUT
+        annot_type = C.PDF_ANNOT_STRIKEOUT
     end
-    page:addMarkupAnnotation(quadpoints, 4*n, annot_type)
+    page:addMarkupAnnotation(quadpoints, n, annot_type)
     page:close()
 end
 
 function PdfDocument:writeDocument()
-    DEBUG("writing document to", self.file)
+    logger.info("writing document to", self.file)
     self._document:writeDocument(self.file)
 end
 
@@ -174,6 +200,8 @@ function PdfDocument:getProps()
     props.authors = props.author
     props.series = ""
     props.language = ""
+    props.keywords = props.keywords
+    props.description = props.subject
     return props
 end
 
@@ -218,10 +246,41 @@ function PdfDocument:drawPage(target, x, y, rect, pageno, zoom, rotation, gamma,
 end
 
 function PdfDocument:register(registry)
-    registry:addProvider("pdf", "application/pdf", self)
-    registry:addProvider("cbz", "application/cbz", self)
-    registry:addProvider("zip", "application/zip", self)
-    registry:addProvider("xps", "application/xps", self)
+    --- Document types ---
+    registry:addProvider("cbt", "application/vnd.comicbook+tar", self, 100)
+    registry:addProvider("cbz", "application/vnd.comicbook+zip", self, 100)
+    registry:addProvider("epub", "application/epub+zip", self, 50)
+    registry:addProvider("fb2", "application/fb2", self, 80)
+    registry:addProvider("htm", "text/html", self, 90)
+    registry:addProvider("html", "text/html", self, 90)
+    registry:addProvider("pdf", "application/pdf", self, 100)
+    registry:addProvider("tar", "application/x-tar", self, 10)
+    registry:addProvider("xhtml", "application/xhtml+xml", self, 100)
+    registry:addProvider("xml", "application/xml", self, 10)
+    registry:addProvider("xps", "application/oxps", self, 100)
+    registry:addProvider("zip", "application/zip", self, 20)
+
+    --- Picture types ---
+    registry:addProvider("gif", "image/gif", self, 90)
+    -- MS HD Photo == JPEG XR
+    registry:addProvider("hdp", "image/vnd.ms-photo", self, 90)
+    registry:addProvider("j2k", "image/jp2", self, 90)
+    registry:addProvider("jp2", "image/jp2", self, 90)
+    registry:addProvider("jpeg", "image/jpeg", self, 90)
+    registry:addProvider("jpg", "image/jpeg", self, 90)
+    -- JPEG XR
+    registry:addProvider("jxr", "image/jxr", self, 90)
+    registry:addProvider("pam", "image/x-portable-arbitrarymap", self, 90)
+    registry:addProvider("pbm", "image/x‑portable‑bitmap", self, 90)
+    registry:addProvider("pgm", "image/x‑portable‑bitmap", self, 90)
+    registry:addProvider("png", "image/png", self, 90)
+    registry:addProvider("pnm", "image/x‑portable‑bitmap", self, 90)
+    registry:addProvider("ppm", "image/x‑portable‑bitmap", self, 90)
+    registry:addProvider("svg", "image/svg+xml", self, 90)
+    registry:addProvider("tif", "image/tiff", self, 90)
+    registry:addProvider("tiff", "image/tiff", self, 90)
+    -- Windows Media Photo == JPEG XR
+    registry:addProvider("wdp", "image/vnd.ms-photo", self, 90)
 end
 
 return PdfDocument

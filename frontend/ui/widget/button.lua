@@ -1,41 +1,64 @@
-local CenterContainer = require("ui/widget/container/centercontainer")
-local InputContainer = require("ui/widget/container/inputcontainer")
-local FrameContainer = require("ui/widget/container/framecontainer")
-local ImageWidget = require("ui/widget/imagewidget")
-local TextWidget = require("ui/widget/textwidget")
-local GestureRange = require("ui/gesturerange")
+--[[--
+A button widget that shows text or an icon and handles callback when tapped.
+
+@usage
+    local Button = require("ui/widget/button")
+    local button = Button:new{
+        text = _("Press me!"),
+        enabled = false, -- defaults to true
+        callback = some_callback_function,
+        width = Screen:scaleBySize(50),
+        max_width = Screen:scaleBySize(100),
+        bordersize = Screen:scaleBySize(3),
+        margin = 0,
+        padding = Screen:scaleBySize(2),
+    }
+--]]
+
 local Blitbuffer = require("ffi/blitbuffer")
-local UIManager = require("ui/uimanager")
-local Geom = require("ui/geometry")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Font = require("ui/font")
+local FrameContainer = require("ui/widget/container/framecontainer")
+local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
+local ImageWidget = require("ui/widget/imagewidget")
+local InputContainer = require("ui/widget/container/inputcontainer")
+local Size = require("ui/size")
+local TextWidget = require("ui/widget/textwidget")
+local UIManager = require("ui/uimanager")
 local _ = require("gettext")
 
---[[
-a button widget that shows text or a icon and handles callback when tapped
---]]
 local Button = InputContainer:new{
     text = nil, -- mandatory
+    text_func = nil,
     icon = nil,
     preselect = false,
     callback = nil,
     enabled = true,
     margin = 0,
-    bordersize = 3,
+    bordersize = Size.border.button,
     background = Blitbuffer.COLOR_WHITE,
-    radius = 15,
-    padding = 2,
+    radius = Size.radius.button,
+    padding = Size.padding.button,
     width = nil,
+    max_width = nil,
     text_font_face = "cfont",
     text_font_size = 20,
     text_font_bold = true,
 }
 
 function Button:init()
+    -- Prefer an optional text_func over text
+    if self.text_func and type(self.text_func) == "function" then
+        self.text = self.text_func()
+    end
+
     if self.text then
         self.label_widget = TextWidget:new{
             text = self.text,
-            fgcolor = Blitbuffer.gray(self.enabled and 1.0 or 0.5),
+            max_width = self.max_width and self.max_width - 2*self.padding - 2*self.margin - 2*self.bordersize or nil,
+            fgcolor = self.enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
             bold = self.text_font_bold,
             face = Font:getFace(self.text_font_face, self.text_font_size)
         }
@@ -43,6 +66,7 @@ function Button:init()
         self.label_widget = ImageWidget:new{
             file = self.icon,
             dim = not self.enabled,
+            scale_for_dpi = true,
         }
     end
     local widget_size = self.label_widget:getSize()
@@ -65,7 +89,7 @@ function Button:init()
         }
     }
     if self.preselect then
-        self:onFocus()
+        self.frame.invert = true
     end
     self.dimen = self.frame:getSize()
     self[1] = self.frame
@@ -84,14 +108,21 @@ function Button:init()
                     range = self.dimen,
                 },
                 doc = "Hold Button",
+            },
+            -- Safe-guard for when used inside a MovableContainer
+            HoldReleaseSelectButton = {
+                GestureRange:new{
+                    ges = "hold_release",
+                    range = self.dimen,
+                },
             }
         }
     end
 end
 
-function Button:setText(text)
+function Button:setText(text, width)
     self.text = text
-    self.width = nil
+    self.width = width
     self:init()
 end
 
@@ -102,11 +133,13 @@ function Button:setIcon(icon)
 end
 
 function Button:onFocus()
+    if self.no_focus then return end
     self.frame.invert = true
     return true
 end
 
 function Button:onUnfocus()
+    if self.no_focus then return end
     self.frame.invert = false
     return true
 end
@@ -114,7 +147,11 @@ end
 function Button:enable()
     self.enabled = true
     if self.text then
-        self.label_widget.fgcolor = Blitbuffer.gray(self.enabled and 1.0 or 0.5)
+        if self.enabled then
+            self.label_widget.fgcolor = Blitbuffer.COLOR_BLACK
+        else
+            self.label_widget.fgcolor = Blitbuffer.COLOR_DARK_GRAY
+        end
     else
         self.label_widget.dim = not self.enabled
     end
@@ -123,7 +160,11 @@ end
 function Button:disable()
     self.enabled = false
     if self.text then
-        self.label_widget.fgcolor = Blitbuffer.gray(self.enabled and 1.0 or 0.5)
+        if self.enabled then
+            self.label_widget.fgcolor = Blitbuffer.COLOR_BLACK
+        else
+            self.label_widget.fgcolor = Blitbuffer.COLOR_DARK_GRAY
+        end
     else
         self.label_widget.dim = not self.enabled
     end
@@ -162,32 +203,68 @@ end
 
 function Button:onTapSelectButton()
     if self.enabled and self.callback then
-        UIManager:scheduleIn(0.0, function()
-            self[1].invert = true
-            UIManager:setDirty(self.show_parent, function()
-                return "ui", self[1].dimen
-            end)
-        end)
-        UIManager:scheduleIn(0.1, function()
+        if G_reader_settings:isFalse("flash_ui") then
             self.callback()
-            self[1].invert = false
-            UIManager:setDirty(self.show_parent, function()
-                return "ui", self[1].dimen
+        else
+            -- For most of our buttons, we can't avoid that initial repaint...
+            self[1].invert = true
+            UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
+            -- NOTE: This completely insane double repaint is needed to avoid cosmetic issues with FrameContainer's rounded corners on Text buttons...
+            --       On the upside, we now actually get to *see* those rounded corners (as the highlight), where it was a simple square before.
+            --       c.f., #4554 & #4541
+            -- NOTE: self[1] -> self.frame, if you're confused about what this does vs. onFocus/onUnfocus ;).
+            if self.text then
+                UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
+            end
+            UIManager:setDirty(nil, function()
+                return "fast", self[1].dimen
             end)
-        end)
+            -- And we also often have to delay the callback to both see the flash and/or avoid tearing artefacts w/ fast refreshes...
+            UIManager:tickAfterNext(function()
+                self.callback()
+                self[1].invert = false
+                UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
+                if self.text then
+                    UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
+                end
+                UIManager:setDirty(nil, function()
+                    return "fast", self[1].dimen
+                end)
+            end)
+        end
     elseif self.tap_input then
         self:onInput(self.tap_input)
+    elseif type(self.tap_input_func) == "function" then
+        self:onInput(self.tap_input_func())
     end
-    return true
+    if self.readonly ~= true then
+        return true
+    end
 end
 
 function Button:onHoldSelectButton()
     if self.enabled and self.hold_callback then
         self.hold_callback()
     elseif self.hold_input then
-        self:onInput(self.hold_input)
+        self:onInput(self.hold_input, true)
+    elseif type(self.hold_input_func) == "function" then
+        self:onInput(self.hold_input_func(), true)
     end
-    return true
+    if self.readonly ~= true then
+        return true
+    end
+end
+
+function Button:onHoldReleaseSelectButton()
+    -- Safe-guard for when used inside a MovableContainer,
+    -- which would handle HoldRelease and process it like
+    -- a Hold if we wouldn't return true here
+    if self.enabled and self.hold_callback then
+        return true
+    elseif self.hold_input or type(self.hold_input_func) == "function" then
+        return true
+    end
+    return false
 end
 
 return Button

@@ -1,14 +1,16 @@
-require("commonrequire")
-local util = require("ffi/util")
-local UIManager = require("ui/uimanager")
-local DEBUG = require("dbg")
-DEBUG:turnOn()
-
 describe("UIManager spec", function()
+    local UIManager, util
+    local now, wait_until
     local noop = function() end
 
+    setup(function()
+        require("commonrequire")
+        util = require("ffi/util")
+        UIManager = require("ui/uimanager")
+    end)
+
     it("should consume due tasks", function()
-        local now = { util.gettime() }
+        now = { util.gettime() }
         local future = { now[1] + 60000, now[2] }
         local future2 = {future[1] + 5, future[2]}
         UIManager:quit()
@@ -26,7 +28,7 @@ describe("UIManager spec", function()
     end)
 
     it("should calcualte wait_until properly in checkTasks routine", function()
-        local now = { util.gettime() }
+        now = { util.gettime() }
         local future = { now[1] + 60000, now[2] }
         UIManager:quit()
         UIManager._task_queue = {
@@ -41,7 +43,7 @@ describe("UIManager spec", function()
     end)
 
     it("should return nil wait_until properly in checkTasks routine", function()
-        local now = { util.gettime() }
+        now = { util.gettime() }
         UIManager:quit()
         UIManager._task_queue = {
             { time = {now[1] - 10, now[2] }, action = noop },
@@ -53,7 +55,7 @@ describe("UIManager spec", function()
     end)
 
     it("should insert new task properly in empty task queue", function()
-        local now = { util.gettime() }
+        now = { util.gettime() }
         UIManager:quit()
         UIManager._task_queue = {}
         assert.are.same(0, #UIManager._task_queue)
@@ -63,7 +65,7 @@ describe("UIManager spec", function()
     end)
 
     it("should insert new task properly in single task queue", function()
-        local now = { util.gettime() }
+        now = { util.gettime() }
         local future = { now[1]+10000, now[2] }
         UIManager:quit()
         UIManager._task_queue = {
@@ -88,8 +90,7 @@ describe("UIManager spec", function()
     end)
 
     it("should insert new task in ascendant order", function()
-        local now = { util.gettime() }
-        local noop1 = function() end
+        now = { util.gettime() }
         UIManager:quit()
         UIManager._task_queue = {
             { time = {now[1] - 10, now[2] }, action = '1' },
@@ -114,8 +115,7 @@ describe("UIManager spec", function()
     end)
 
     it("should unschedule all the tasks with the same action", function()
-        local now = { util.gettime() }
-        local noop1 = function() end
+        now = { util.gettime() }
         UIManager:quit()
         UIManager._task_queue = {
             { time = {now[1] - 15, now[2] }, action = '3' },
@@ -133,7 +133,7 @@ describe("UIManager spec", function()
     end)
 
     it("should not have race between unschedule and _checkTasks", function()
-        local now = { util.gettime() }
+        now = { util.gettime() }
         local run_count = 0
         local task_to_remove = function()
             run_count = run_count + 1
@@ -152,5 +152,223 @@ describe("UIManager spec", function()
         }
         UIManager:_checkTasks()
         assert.are.same(run_count, 2)
+    end)
+
+    it("should clear _task_queue_dirty bit before looping", function()
+        UIManager:quit()
+        assert.is.not_true(UIManager._task_queue_dirty)
+        UIManager:nextTick(function() UIManager:nextTick(noop) end)
+        UIManager:_checkTasks()
+        assert.is_true(UIManager._task_queue_dirty)
+    end)
+
+    describe("modal widgets", function()
+        it("should insert modal widget on top", function()
+            -- first modal widget
+            UIManager:show({
+                x_prefix_test_number = 1,
+                modal = true,
+                handleEvent = function()
+                    return true
+                end
+            })
+            -- regular widget, should go under modal widget
+            UIManager:show({
+                x_prefix_test_number = 2,
+                modal = nil,
+                handleEvent = function()
+                    return true
+                end
+            })
+
+            assert.equals(UIManager._window_stack[1].widget.x_prefix_test_number, 2)
+            assert.equals(UIManager._window_stack[2].widget.x_prefix_test_number, 1)
+        end)
+        it("should insert second modal widget on top of first modal widget", function()
+            UIManager:show({
+                x_prefix_test_number = 3,
+                modal = true,
+                handleEvent = function()
+                    return true
+                end
+            })
+
+            assert.equals(UIManager._window_stack[1].widget.x_prefix_test_number, 2)
+            assert.equals(UIManager._window_stack[2].widget.x_prefix_test_number, 1)
+            assert.equals(UIManager._window_stack[3].widget.x_prefix_test_number, 3)
+        end)
+    end)
+
+    it("should check active widgets in order", function()
+        local call_signals = {false, false, false}
+        UIManager._window_stack = {
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[1] = true
+                        return true
+                    end
+                }
+            },
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[2] = true
+                        return true
+                    end
+                }
+            },
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[3] = true
+                        return true
+                    end
+                }
+            },
+            {widget = {handleEvent = function()end}},
+        }
+
+        UIManager:sendEvent("foo")
+        assert.falsy(call_signals[1])
+        assert.falsy(call_signals[2])
+        assert.truthy(call_signals[3])
+    end)
+
+    it("should handle stack change when checking for active widgets", function()
+        -- senario 1: 2nd widget removes the 3rd widget in the stack
+        local call_signals = {0, 0, 0}
+        UIManager._window_stack = {
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[1] = call_signals[1] + 1
+                    end
+                }
+            },
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[2] = call_signals[2] + 1
+                    end
+                }
+            },
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[3] = call_signals[3] + 1
+                        table.remove(UIManager._window_stack, 2)
+                    end
+                }
+            },
+            {widget = {handleEvent = function()end}},
+        }
+
+        UIManager:sendEvent("foo")
+        assert.is.same(call_signals[1], 1)
+        assert.is.same(call_signals[2], 0)
+        assert.is.same(call_signals[3], 1)
+
+        -- senario 2: top widget removes itself
+        call_signals = {0, 0, 0}
+        UIManager._window_stack = {
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[1] = call_signals[1] + 1
+                    end
+                }
+            },
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[2] = call_signals[2] + 1
+                    end
+                }
+            },
+            {
+                widget = {
+                    is_always_active = true,
+                    handleEvent = function()
+                        call_signals[3] = call_signals[3] + 1
+                        table.remove(UIManager._window_stack, 3)
+                    end
+                }
+            },
+        }
+
+        UIManager:sendEvent("foo")
+        assert.is.same(call_signals[1], 1)
+        assert.is.same(call_signals[2], 1)
+        assert.is.same(call_signals[3], 1)
+    end)
+
+    it("should handle stack change when broadcasting events", function()
+        UIManager._window_stack = {
+            {
+                widget = {
+                    handleEvent = function()
+                        UIManager._window_stack[1] = nil
+                    end
+                }
+            },
+        }
+        UIManager:broadcastEvent("foo")
+        assert.is.same(#UIManager._window_stack, 0)
+
+        UIManager._window_stack = {
+            {
+                widget = {
+                    handleEvent = function()
+                        UIManager._window_stack[1] = nil
+                        UIManager._window_stack[2] = nil
+                        UIManager._window_stack[3] = nil
+                    end
+                }
+            },
+            {
+                widget = {
+                    handleEvent = function()
+                        assert.falsy(true);
+                    end
+                }
+            },
+            {
+                widget = {
+                    handleEvent = function()
+                        assert.falsy(true);
+                    end
+                }
+            },
+        }
+        UIManager:broadcastEvent("foo")
+        assert.is.same(#UIManager._window_stack, 0)
+    end)
+
+    it("should handle stack change when closing widgets", function()
+        local widget_1 = {handleEvent = function()end}
+        local widget_2  = {
+            handleEvent = function()
+                UIManager:close(widget_1)
+            end
+        }
+        local widget_3 = {handleEvent = function()end}
+        UIManager._window_stack = {
+            {widget = widget_1},
+            {widget = widget_2},
+            {widget = widget_3},
+        }
+        UIManager:close(widget_2)
+
+        assert.is.same(1, #UIManager._window_stack)
+        assert.is.same(widget_3, UIManager._window_stack[1].widget)
     end)
 end)

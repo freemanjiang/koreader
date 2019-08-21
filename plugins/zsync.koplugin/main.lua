@@ -1,53 +1,50 @@
+local DataStorage = require("datastorage")
 local InputContainer = require("ui/widget/container/inputcontainer")
-local FrameContainer = require("ui/widget/container/framecontainer")
-local VerticalGroup = require("ui/widget/verticalgroup")
-local VerticalSpan = require("ui/widget/verticalspan")
-local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
-local TextWidget = require("ui/widget/textwidget")
-local DocSettings = require("docsettings")
 local UIManager = require("ui/uimanager")
-local Screen = require("device").screen
-local Event = require("ui/event")
-local Font = require("ui/font")
 local ltn12 = require("ltn12")
 local DEBUG = require("dbg")
 local _ = require("gettext")
-local util = require("ffi/util")
--- lfs
 
 local ffi = require("ffi")
+local C = ffi.C
 ffi.cdef[[
 int remove(const char *);
 int rmdir(const char *);
 ]]
 
-local dummy = require("ffi/zeromq_h")
+require("ffi/zeromq_h")
 local ZSync = InputContainer:new{
     name = "zsync",
+    is_doc_only = true,
 }
 
 function ZSync:init()
     self.ui.menu:registerToMainMenu(self)
-    self.outbox = self.path.."/outbox"
+    self.outbox = DataStorage:getFullDataDir().."/zsync-outbox"
     self.server_config = self.path.."/server.cfg"
     self.client_config = self.path.."/client.cfg"
 end
 
-function ZSync:addToMainMenu(tab_item_table)
-    table.insert(tab_item_table.plugins, {
+function ZSync:addToMainMenu(menu_items)
+    menu_items.zsync = {
         text = _("ZSync"),
         sub_item_table = {
             {
                 text_func = function()
                     return not self.filemq_server
-                        and _("Publish this document")
-                        or _("Stop publisher")
+                        and _("Share this document")
+                        or _("Stop sharing books")
                 end,
                 enabled_func = function()
                     return self.filemq_client == nil
                 end,
                 callback = function()
+                    local NetworkMgr = require("ui/network/manager")
+                    if not NetworkMgr:isOnline() then
+                        NetworkMgr:promptWifiOn()
+                        return
+                    end
                     if not self.filemq_server then
                         self:publish()
                     else
@@ -58,13 +55,18 @@ function ZSync:addToMainMenu(tab_item_table)
             {
                 text_func = function()
                     return not self.filemq_client
-                        and _("Subscribe documents")
-                        or _("Stop subscriber")
+                        and _("Subscribe to book share")
+                        or _("Unsubscribe from book share")
                 end,
                 enabled_func = function()
                     return self.filemq_server == nil
                 end,
                 callback = function()
+                    local NetworkMgr = require("ui/network/manager")
+                    if not NetworkMgr:isOnline() then
+                        NetworkMgr:promptWifiOn()
+                        return
+                    end
                     if not self.filemq_client then
                         self:subscribe()
                     else
@@ -73,7 +75,7 @@ function ZSync:addToMainMenu(tab_item_table)
                 end
             }
         }
-    })
+    }
 end
 
 function ZSync:initServerZyreMQ()
@@ -136,13 +138,13 @@ local function clearDirectory(dir, rmdir)
         local path = dir.."/"..f
         local mode = lfs.attributes(path, "mode")
         if mode == "file" then
-            ffi.C.remove(path)
+            C.remove(path)
         elseif mode == "directory" and f ~= "." and f ~= ".." then
             clearDirectory(path, true)
         end
     end
     if rmdir then
-        ffi.C.rmdir(dir)
+        C.rmdir(dir)
     end
 end
 
@@ -233,7 +235,7 @@ function ZSync:subscribe()
     self.received = {}
     local zsync = self
     require("ui/downloadmgr"):new{
-        title = _("Choose inbox"),
+        show_hidden = G_reader_settings:readSetting("show_hidden"),
         onConfirm = function(inbox)
             G_reader_settings:saveSetting("inbox_dir", inbox)
             zsync:onChooseInbox(inbox)

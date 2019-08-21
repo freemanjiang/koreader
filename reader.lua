@@ -1,40 +1,65 @@
 #!./luajit
+io.stdout:write([[
+---------------------------------------------
+                launching...
+  _  _____  ____                _
+ | |/ / _ \|  _ \ ___  __ _  __| | ___ _ __
+ | ' / | | | |_) / _ \/ _` |/ _` |/ _ \ '__|
+ | . \ |_| |  _ <  __/ (_| | (_| |  __/ |
+ |_|\_\___/|_| \_\___|\__,_|\__,_|\___|_|
+
+ It's a scroll... It's a codex... It's KOReader!
+
+ [*] Current time: ]], os.date("%x-%X"), "\n")
+io.stdout:flush()
 
 -- load default settings
-require "defaults"
+require("defaults")
 local DataStorage = require("datastorage")
 pcall(dofile, DataStorage:getDataDir() .. "/defaults.persistent.lua")
 
--- set search path for 'require()'
-package.path =
-    "common/?.lua;rocks/share/lua/5.1/?.lua;frontend/?.lua;" ..
-    package.path
-package.cpath =
-    "common/?.so;common/?.dll;/usr/lib/lua/?.so;rocks/lib/lua/5.1/?.so;" ..
-    package.cpath
+require("setupkoenv")
 
--- set search path for 'ffi.load()'
-local ffi = require("ffi")
-local util = require("ffi/util")
-ffi.cdef[[
-    char *getenv(const char *name);
-    int putenv(const char *envvar);
-    int _putenv(const char *envvar);
-]]
-if ffi.os == "Windows" then
-    ffi.C._putenv("PATH=libs;common;")
-end
+io.stdout:write(" [*] Version: ", require("version"):getCurrentRevision(), "\n\n")
+io.stdout:flush()
 
-local DocSettings = require("docsettings")
-local _ = require("gettext")
 -- read settings and check for language override
 -- has to be done before requiring other files because
 -- they might call gettext on load
-G_reader_settings = DocSettings:open(".reader")
+G_reader_settings = require("luasettings"):open(
+    DataStorage:getDataDir().."/settings.reader.lua")
 local lang_locale = G_reader_settings:readSetting("language")
+local _ = require("gettext")
 if lang_locale then
     _.changeLang(lang_locale)
 end
+
+-- Make the C blitter optional (ffi/blitbuffer.lua will check that env var)
+local ffi = require("ffi")
+local dummy = require("ffi/posix_h")
+local C = ffi.C
+if G_reader_settings:isTrue("dev_no_c_blitter") then
+    if ffi.os == "Windows" then
+        C._putenv("KO_NO_CBB=true")
+    else
+        C.setenv("KO_NO_CBB", "true", 1)
+    end
+else
+    if ffi.os == "Windows" then
+        C._putenv("KO_NO_CBB=false")
+    else
+        C.unsetenv("KO_NO_CBB")
+    end
+end
+
+local Device = require("device")
+local dpi_override = G_reader_settings:readSetting("screen_dpi")
+if dpi_override ~= nil then
+    Device:setScreenDPI(dpi_override)
+end
+
+local CanvasContext = require("document/canvascontext")
+CanvasContext:init(Device)
 
 -- option parsing:
 local longopts = {
@@ -48,6 +73,7 @@ local function showusage()
     print("Read all the books on your E-Ink reader")
     print("")
     print("-d               start in debug mode")
+    print("-v               debug in verbose mode")
     print("-p               enable Lua code profiling")
     print("-h               show this usage help")
     print("")
@@ -58,12 +84,13 @@ local function showusage()
     print("")
     print("This software is licensed under the AGPLv3.")
     print("See http://github.com/koreader/koreader for more info.")
-    return
 end
 
 -- should check DEBUG option in arg and turn on DEBUG before loading other
 -- modules, otherwise DEBUG in some modules may not be printed.
-local DEBUG = require("dbg")
+local dbg = require("dbg")
+if G_reader_settings:isTrue("debug") then dbg:turnOn() end
+if G_reader_settings:isTrue("debug") and G_reader_settings:isTrue("debug_verbose") then dbg:setVerbose(true) end
 
 local Profiler = nil
 local ARGV = arg
@@ -81,7 +108,9 @@ while argidx <= #ARGV do
     if arg == "-h" then
         return showusage()
     elseif arg == "-d" then
-        DEBUG:turnOn()
+        dbg:turnOn()
+    elseif arg == "-v" then
+        dbg:setVerbose(true)
     elseif arg == "-p" then
         Profiler = require("jit.p")
         Profiler.start("la")
@@ -92,56 +121,88 @@ while argidx <= #ARGV do
     end
 end
 
-local lfs = require("libs/libkoreader-lfs")
+local ConfirmBox = require("ui/widget/confirmbox")
+local QuickStart = require("ui/quickstart")
 local UIManager = require("ui/uimanager")
-local Device = require("device")
-local Font = require("ui/font")
+local lfs = require("libs/libkoreader-lfs")
+
+local function retryLastFile()
+    return ConfirmBox:new{
+        text = _("Cannot open last file.\nThis could be because it was deleted or because external storage is still being mounted.\nDo you want to retry?"),
+        ok_callback = function()
+            local last_file = G_reader_settings:readSetting("lastfile")
+            if lfs.attributes(last_file, "mode") == "file" then
+                local ReaderUI = require("apps/reader/readerui")
+                UIManager:nextTick(function()
+                    ReaderUI:showReader(last_file)
+                end)
+            else
+                UIManager:show(retryLastFile())
+            end
+        end,
+    }
+end
 
 -- read some global reader setting here:
 -- font
 local fontmap = G_reader_settings:readSetting("fontmap")
 if fontmap ~= nil then
-    Font.fontmap = fontmap
+    local Font = require("ui/font")
+    for k, v in pairs(fontmap) do
+        Font.fontmap[k] = v
+    end
 end
 -- last file
 local last_file = G_reader_settings:readSetting("lastfile")
-if last_file and lfs.attributes(last_file, "mode") ~= "file" then
-    last_file = nil
-end
+local start_with = G_reader_settings:readSetting("start_with")
 -- load last opened file
-local open_last = G_reader_settings:readSetting("open_last")
+local open_last = start_with == "last"
+if open_last and last_file and lfs.attributes(last_file, "mode") ~= "file" then
+    UIManager:show(retryLastFile())
+    last_file = nil
+elseif not QuickStart:isShown() then
+    open_last = true
+    last_file = QuickStart:getQuickStart()
+end
 -- night mode
-if G_reader_settings:readSetting("night_mode") then
-    Device.Screen:toggleNightMode()
+if G_reader_settings:isTrue("night_mode") then
+    Device.screen:toggleNightMode()
+end
+-- dithering
+if Device:hasEinkScreen() then
+    Device.screen:setupDithering()
+    if Device.screen.hw_dithering and G_reader_settings:isTrue("dev_no_hw_dither") then
+        Device.screen:toggleHWDithering()
+    end
+    if Device.screen.sw_dithering and G_reader_settings:isTrue("dev_no_sw_dither") then
+        Device.screen:toggleSWDithering()
+    end
 end
 
--- restore kobo frontlight settings and probe kobo touch coordinates
-if Device:isKobo() then
-    local powerd = Device:getPowerDevice()
-    if powerd and powerd.restore_settings then
-        -- UIManager:init() should have sanely set up the frontlight_stuff by this point
-        local intensity = G_reader_settings:readSetting("frontlight_intensity")
-        powerd.fl_intensity = intensity or powerd.fl_intensity
-        local is_frontlight_on = G_reader_settings:readSetting("is_frontlight_on")
-        if is_frontlight_on then
-            -- default powerd.is_fl_on is false, turn it on
-            powerd:toggleFrontlight()
-        else
-            -- the light can still be turned on manually outside of koreader
-            -- or nickel. so we always set the intensity to 0 here to keep it
-            -- in sync with powerd.is_fl_on (false by default)
-            -- NOTE: we cant use setIntensity method here because for kobo the
-            -- min intensity is 1 :(
-            powerd.fl:setBrightness(0)
-        end
-    end
-    if Device:getCodeName() == "trilogy" then
-        require("utils/kobo_touch_probe")
-    end
+if Device:needsTouchScreenProbe() then
+    Device:touchScreenProbe()
 end
+
+-- Inform once about color rendering on newly supported devices
+-- (there are some android devices that may not have a color screen,
+-- and we are not (yet?) able to guess that fact)
+if Device:hasColorScreen() and not G_reader_settings:has("color_rendering") then
+    -- enable it to prevent further display of this message
+    G_reader_settings:saveSetting("color_rendering", true)
+    local InfoMessage = require("ui/widget/infomessage")
+    UIManager:show(InfoMessage:new{
+        text = _("Documents will be rendered in color on this device.\nIf your device is grayscale, you can disable color rendering in the screen sub-menu for reduced memory usage."),
+    })
+end
+
+-- Handle global settings migration
+local SettingsMigration = require("ui/data/settings_migration")
+SettingsMigration:migrateSettings(G_reader_settings)
+
+local exit_code
 
 if ARGV[argidx] and ARGV[argidx] ~= "" then
-    local file = nil
+    local file
     if lfs.attributes(ARGV[argidx], "mode") == "file" then
         file = ARGV[argidx]
     elseif open_last and last_file then
@@ -163,14 +224,29 @@ if ARGV[argidx] and ARGV[argidx] ~= "" then
         UIManager:nextTick(function()
             FileManager:showFiles(home_dir)
         end)
+        -- always open history on top of filemanager so closing history
+        -- doesn't result in exit
+        if start_with == "history" then
+            local FileManagerHistory = require("apps/filemanager/filemanagerhistory")
+            UIManager:nextTick(function()
+                FileManagerHistory:onShowHist(last_file)
+            end)
+        elseif start_with == "folder_shortcuts" then
+            local FileManagerShortcuts = require("apps/filemanager/filemanagershortcuts")
+            UIManager:nextTick(function()
+                FileManagerShortcuts:new{
+                    ui = FileManager.instance,
+                }:onShowFolderShortcutsDialog()
+            end)
+        end
     end
-    UIManager:run()
+    exit_code = UIManager:run()
 elseif last_file then
     local ReaderUI = require("apps/reader/readerui")
     UIManager:nextTick(function()
         ReaderUI:showReader(last_file)
     end)
-    UIManager:run()
+    exit_code = UIManager:run()
 else
     return showusage()
 end
@@ -178,6 +254,9 @@ end
 local function exitReader()
     local ReaderActivityIndicator =
         require("apps/reader/modules/readeractivityindicator")
+
+    -- Save any device settings before closing G_reader_settings
+    Device:saveSettings()
 
     G_reader_settings:close()
 
@@ -188,7 +267,12 @@ local function exitReader()
     Device:exit()
 
     if Profiler then Profiler.stop() end
-    os.exit(0)
+
+    if type(exit_code) == "number" then
+        os.exit(exit_code)
+    else
+        os.exit(0)
+    end
 end
 
 exitReader()

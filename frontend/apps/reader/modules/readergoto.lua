@@ -1,26 +1,33 @@
+local Event = require("ui/event")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
+local SkimToWidget = require("apps/reader/skimtowidget")
 local UIManager = require("ui/uimanager")
-local Screen = require("device").screen
-local Event = require("ui/event")
 local _ = require("gettext")
 
 local ReaderGoto = InputContainer:new{
     goto_menu_title = _("Go to"),
+    skim_menu_title = _("Skim document"),
 }
 
 function ReaderGoto:init()
     self.ui.menu:registerToMainMenu(self)
 end
 
-function ReaderGoto:addToMainMenu(tab_item_table)
+function ReaderGoto:addToMainMenu(menu_items)
     -- insert goto command to main reader menu
-    table.insert(tab_item_table.navi, {
+    menu_items.go_to = {
         text = self.goto_menu_title,
         callback = function()
             self:onShowGotoDialog()
         end,
-    })
+    }
+    menu_items.skim_to = {
+        text = self.skim_menu_title,
+        callback = function()
+            self:onShowSkimtoDialog()
+        end,
+    }
 end
 
 function ReaderGoto:onShowGotoDialog()
@@ -28,6 +35,7 @@ function ReaderGoto:onShowGotoDialog()
     if self.document.info.has_pages then
         dialog_title = _("Go to Page")
         goto_btn = {
+            is_enter_default = true,
             text = _("Page"),
             callback = function() self:gotoPage() end,
         }
@@ -35,6 +43,7 @@ function ReaderGoto:onShowGotoDialog()
     else
         dialog_title = _("Go to Location")
         goto_btn = {
+            is_enter_default = true,
             text = _("Location"),
             callback = function() self:gotoPage() end,
         }
@@ -53,20 +62,45 @@ function ReaderGoto:onShowGotoDialog()
                         self:close()
                     end,
                 },
+                {
+                    text = _("Skim mode"),
+                    enabled = true,
+                    callback = function()
+                        self:close()
+                        self.skimto = SkimToWidget:new{
+                            document = self.document,
+                            ui = self.ui,
+                            callback_switch_to_goto = function()
+                                UIManager:close(self.skimto)
+                                self:onShowGotoDialog()
+                            end,
+                        }
+                        UIManager:show(self.skimto)
+
+                    end,
+                },
                 goto_btn,
             },
         },
         input_type = "number",
-        enter_callback = function() self:gotoPage() end,
-        width = Screen:getWidth() * 0.8,
-        height = Screen:getHeight() * 0.2,
     }
-    self.goto_dialog:onShowKeyboard()
     UIManager:show(self.goto_dialog)
+    self.goto_dialog:onShowKeyboard()
+end
+
+function ReaderGoto:onShowSkimtoDialog()
+    self.skimto = SkimToWidget:new{
+        document = self.document,
+        ui = self.ui,
+        callback_switch_to_goto = function()
+            UIManager:close(self.skimto)
+            self:onShowGotoDialog()
+        end,
+    }
+    UIManager:show(self.skimto)
 end
 
 function ReaderGoto:close()
-    self.goto_dialog:onClose()
     UIManager:close(self.goto_dialog)
 end
 
@@ -75,6 +109,7 @@ function ReaderGoto:gotoPage()
     local relative_sign = page_number:sub(1, 1)
     local number = tonumber(page_number)
     if number then
+        self.ui.link:addCurrentLocationToStack()
         if relative_sign == "+" or relative_sign == "-" then
             self.ui:handleEvent(Event:new("GotoRelativePage", number))
         else
